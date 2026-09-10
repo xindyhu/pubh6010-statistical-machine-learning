@@ -1,0 +1,70 @@
+---
+title: "Data dictionary — studypop.csv"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+**Source.** NHANES 2001–2002 (US CDC), the analytic study population used in
+Gibson EA, Nunez Y, Abuawad A, Zota AR, Renzetti S, Devick KL, Gennings C,
+Goldsmith J, Coull BA, Kioumourtzoglou MA. *An overview of methods to address
+distinct research questions on environmental mixtures: an application to
+persistent organic pollutants and leukocyte telomere length.* **Environmental
+Health.** 2019;18:76. doi:10.1186/s12940-019-0515-1.
+
+**Provenance.** File redistributed for teaching in the authors' public workshop
+repository (`github.com/lizzyagibson/SHARP.Mixtures.Workshop`, folder `Data/`).
+The underlying NHANES data are US-government public-use, deidentified records.
+
+```{r peek}
+d <- read.csv("studypop.csv")
+dim(d)                                  # 1330 x 33
+sum(complete.cases(d[, grep("^LBX.*LA$", names(d))]))  # complete POP cases
+```
+
+## The exposure mixture — 18 persistent organic pollutants (lipid-adjusted)
+
+All are serum concentrations, lipid-adjusted (the `LA` suffix), treated as
+continuous and log-transformed for analysis.
+
+| Column | Congener | Family |
+|---|---|---|
+| `LBX074LA` | PCB 74 | Non-dioxin-like PCB |
+| `LBX099LA` | PCB 99 | Non-dioxin-like PCB |
+| `LBX118LA` | PCB 118 | Mono-ortho / dioxin-like PCB |
+| `LBX138LA` | PCB 138 | Non-dioxin-like PCB |
+| `LBX153LA` | PCB 153 | Non-dioxin-like PCB |
+| `LBX170LA` | PCB 170 | Non-dioxin-like PCB |
+| `LBX180LA` | PCB 180 | Non-dioxin-like PCB |
+| `LBX187LA` | PCB 187 | Non-dioxin-like PCB |
+| `LBX194LA` | PCB 194 | Non-dioxin-like PCB |
+| `LBXPCBLA` | PCB 169 | Dioxin-like PCB |
+| `LBXHXCLA` | PCB 156 (hexachlorobiphenyl) | Dioxin-like PCB |
+| `LBXD03LA` | 1,2,3,6,7,8-hexachlorodibenzo-p-dioxin | Dioxin |
+| `LBXD05LA` | 1,2,3,4,6,7,8-heptachlorodibenzo-p-dioxin | Dioxin |
+| `LBXD07LA` | 1,2,3,4,6,7,8,9-octachlorodibenzo-p-dioxin | Dioxin |
+| `LBXF03LA` | 2,3,4,7,8-pentachlorodibenzofuran | Furan |
+| `LBXF04LA` | 1,2,3,4,7,8-hexachlorodibenzofuran | Furan |
+| `LBXF05LA` | 1,2,3,6,7,8-hexachlorodibenzofuran | Furan |
+| `LBXF08LA` | 1,2,3,4,6,7,8-heptachlorodibenzofuran | Furan |
+
+## Outcome and covariates (not part of the mixture)
+
+| Column | Meaning |
+|---|---|
+| `SEQN` | NHANES respondent ID |
+| `TELOMEAN` | Mean leukocyte telomere length (T/S ratio) — the health outcome |
+| `LBXWBCSI` | White blood cell count (1000 cells/µL) |
+| `LBXLYPCT`, `LBXMOPCT`, `LBXNEPCT`, `LBXEOPCT`, `LBXBAPCT` | Lymphocyte / monocyte / neutrophil / eosinophil / basophil % |
+| `bmi_cat3` | BMI category (1–3) |
+| `edu_cat` | Education category |
+| `race_cat` | Race/ethnicity category |
+| `male` | Sex (1 = male) |
+| `ln_lbxcot` | ln(serum cotinine) — smoking proxy |
+| `age_cent` | Age, centered |
+| `age_sq` | Age, centered, squared |

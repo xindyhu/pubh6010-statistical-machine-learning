@@ -1,0 +1,141 @@
+---
+title: "Week 3 Exercise — Unsupervised Learning: PCA & Clustering"
+subtitle: "PubH 6010 Independent Study · meeting 9/9 · complete after the meeting"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Why this matters for your project
+
+Your project asks whether extreme-weather events change waterborne-disease risk.
+Real environmental-health data almost always come as **many correlated exposure
+variables measured on the same people or places** — a dozen water-chemistry
+parameters, a panel of contaminants, a set of weather indices. Two problems
+follow: the variables are redundant (highly correlated), and you often have no
+labels telling you which observations "go together." **Unsupervised learning**
+addresses both:
+
+- **Principal Component Analysis (PCA)** compresses many correlated variables
+  into a few uncorrelated components that capture most of the variation — useful
+  for visualization, for summarizing an exposure "mixture," and as a
+  dimension-reduction step before modeling.
+- **Clustering** (k-means, hierarchical) groups observations into profiles
+  without using an outcome — useful for finding exposure subpopulations.
+
+A caution to carry the whole way through: **PCA and clustering are descriptive,
+not causal, and not prediction of an outcome.** They use only the exposure
+matrix `X`; no outcome `Y` enters. Keep that straight — it is exactly the
+prediction-vs-description-vs-causation distinction that will shape your
+dissertation's method choice.
+
+# The paper to read first
+
+> Gibson EA, Nunez Y, Abuawad A, Zota AR, Renzetti S, Devick KL, Gennings C,
+> Goldsmith J, Coull BA, Kioumourtzoglou M-A. **An overview of methods to
+> address distinct research questions on environmental mixtures: an application
+> to persistent organic pollutants and leukocyte telomere length.**
+> *Environmental Health.* 2019;18:76. doi:10.1186/s12940-019-0515-1 (open access)
+
+Read the **Introduction** and the **PCA** and **clustering/profile**
+subsections. As you read, note: (1) what question each unsupervised method is
+answering, and (2) how the authors decide *how many* components or clusters to
+keep. You will reproduce a simplified version of their PCA and clustering on the
+same data.
+
+# The data
+
+`studypop.csv` — NHANES 2001–2002, 1,330 US adults. It contains **18
+lipid-adjusted persistent organic pollutants (POPs)** — 11 PCBs, 3 dioxins,
+4 furans — plus leukocyte telomere length (`TELOMEAN`) and covariates. See
+`studypop_data_dictionary.Rmd` for every column. These POPs are highly
+correlated (they share sources and all accumulate in body fat), which is
+precisely why PCA and clustering are informative here. The data are public and
+deidentified.
+
+# Your tasks
+
+Work in R. You need only base R plus the `cluster` package (which installs with
+R). Submit your knitted `.Rmd` (or a commented `.R` script) and a short write-up
+(≈1–2 pages) answering the questions in **bold**.
+
+## Part A — Set up and preprocess
+
+1. Read the data. Keep the 18 POP columns and drop rows with any missing POP
+   value (`complete.cases`). Report how many participants remain.
+2. POP concentrations are strongly right-skewed and on different scales.
+   **Log-transform** them, then **standardize** (`scale()`).
+
+> **Q1.** Why is standardizing essential before PCA and before distance-based
+> clustering? What would happen if you skipped it?
+
+## Part B — PCA
+
+3. Run PCA (`prcomp`) on the standardized POPs. Make a **scree plot** and report
+   the proportion of variance explained by the first several components.
+
+> **Q2.** How many components would you keep, and by what rule? (Compare at
+> least two rules — e.g., cumulative-variance threshold vs. the scree "elbow.")
+
+4. Examine the **loadings** of PC1 and PC2 (`pc$rotation[, 1:2]`).
+
+> **Q3.** Give each of PC1 and PC2 a substantive name based on which POPs load
+> on it. What does a person with a high PC1 score look like? A high PC2 score?
+
+5. Make a **biplot** of PC1 vs PC2.
+
+> **Q4.** What structure among the 18 POPs does the biplot reveal?
+
+## Part C — Clustering
+
+6. Cluster participants into exposure profiles two ways:
+   - **k-means** on the first 2–3 PC scores. Use the **average silhouette width**
+     (`cluster::silhouette`) to compare k = 2…6, then pick a k and describe the
+     clusters.
+   - **Hierarchical clustering** (`hclust`, Ward's method) on the standardized
+     POPs. Plot the **dendrogram**, cut it into the same number of groups
+     (`cutree`), and cross-tabulate against the k-means labels.
+
+> **Q5.** How many clusters does the silhouette analysis favor? Do k-means and
+> hierarchical clustering broadly agree? Describe each cluster in plain language
+> (e.g., "low overall burden," "high, PCB-dominated").
+
+## Part D — Interpretation
+
+> **Q6.** You did not use telomere length anywhere in Parts B–C. Explain why PCA
+> and clustering are *descriptive/unsupervised*. For your own project, name one concrete way PCA
+> or clustering could be a useful *step* — and one thing they cannot tell you.
+
+# Starter code (fill in the blanks)
+
+```{r starter, eval=FALSE}
+library(cluster)
+set.seed(2026)
+d <- read.csv("studypop.csv")
+pops <- c("LBX074LA","LBX099LA","LBX118LA","LBX138LA","LBX153LA","LBX170LA",
+          "LBX180LA","LBX187LA","LBX194LA","LBXPCBLA","LBXHXCLA",
+          "LBXD03LA","LBXD05LA","LBXD07LA","LBXF03LA","LBXF04LA","LBXF05LA","LBXF08LA")
+X  <- d[complete.cases(d[, pops]), pops]
+Xs <- scale(log(X))            # log, then standardize
+pc <- prcomp(Xs)               # PCA  -> summary(pc), pc$rotation, pc$x
+# ... scree plot, loadings, biplot ...
+# km <- kmeans(pc$x[, 1:3], centers = ?, nstart = 25)   # k-means
+# hc <- hclust(dist(Xs), method = "ward.D2")            # hierarchical
+```
+
+# What "good" looks like
+
+A correct submission (i) preprocesses sensibly and justifies it, (ii) keeps a
+defensible number of components with a stated rule, (iii) interprets PC1/PC2
+substantively, (iv) chooses k with the silhouette and describes the clusters,
+and (v) in Q6 draws a clean line between description, prediction, and causation.
+Numerical answers should land near: ~1,000 complete cases; PC1 ≈ 60–65% of
+variance; PC1 an "overall burden" axis; PC2 a "PCB vs dioxin/furan" contrast.
