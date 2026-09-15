@@ -1,7 +1,7 @@
 ---
 title: "Week 3 Exercise — Unsupervised Learning: PCA & Clustering"
 subtitle: "PubH 6010 Independent Study · meeting 9/9 · complete after the meeting"
-author: "Your name:"
+author: "Your name: Katie O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -73,26 +73,87 @@ R). Submit your knitted `.Rmd` (or a commented `.R` script) and a short write-up
    value (`complete.cases`). Report how many participants remain.
 2. POP concentrations are strongly right-skewed and on different scales.
    **Log-transform** them, then **standardize** (`scale()`).
+   
+```{r}
+library(cluster)
+set.seed(2026)
+d <- read.csv("studypop.csv")
+pops <- c("LBX074LA","LBX099LA","LBX118LA","LBX138LA","LBX153LA","LBX170LA",
+          "LBX180LA","LBX187LA","LBX194LA","LBXPCBLA","LBXHXCLA",
+          "LBXD03LA","LBXD05LA","LBXD07LA","LBXF03LA","LBXF04LA","LBXF05LA","LBXF08LA")
+X  <- d[complete.cases(d[, pops]), pops]
+Xs <- scale(log(X))   
+
+# there are 1,007 participants remaining
+```
+
 
 > **Q1.** Why is standardizing essential before PCA and before distance-based
 > clustering? What would happen if you skipped it?
+
+Standardizing is essential because the units of variables differ. Having different
+units results in different ranges. If standardizing was not done, variables with larger 
+variances would disproportionately inform the solution. 
+
 
 ## Part B — PCA
 
 3. Run PCA (`prcomp`) on the standardized POPs. Make a **scree plot** and report
    the proportion of variance explained by the first several components.
+   
+```{r}
+# PCA
+pc <- prcomp(Xs)
+summary(pc)
+# PC1 explains 63.45% of the variance, PC2 explains 10.72% of the variance, and PC3 explains 5.84% of the variance.
+
+# variance scree plot
+pc_vars <- pc$sdev^2
+plot(1:18, pc_vars, type = "l", col = "blue4", main = "Variance Scree Plot")
+points(1:18, pc_vars, col = "blue4")
+
+# variance explained scree plot
+pc_vars_exp <- pc$sdev^2 / sum(pc$sdev^2)
+plot(1:18, pc_vars_exp, type = "l", col = "blue", main = "Variance Explained Scree Plot")
+points(1:18, pc_vars_exp, col = "blue")
+```
+
 
 > **Q2.** How many components would you keep, and by what rule? (Compare at
 > least two rules — e.g., cumulative-variance threshold vs. the scree "elbow.")
 
+I would keep the first three principle components. Based on the scree plot, the "elbow" 
+is situated around PC2-PC3. Additionally, the first three principle components explain 80% 
+of the cumulative variance. While there is no defined threshold, >75% of the total variance is
+what was used in the original paper. 
+
 4. Examine the **loadings** of PC1 and PC2 (`pc$rotation[, 1:2]`).
+```{r}
+pc$rotation[, 1:2]
+```
+
 
 > **Q3.** Give each of PC1 and PC2 a substantive name based on which POPs load
 > on it. What does a person with a high PC1 score look like? A high PC2 score?
 
+PC1 could be named non-dioxin like PCB because the non-dioxin like PCB POPs have a stronger
+influence on PC1 compared to the other variables. A person with a high PC1 score would likely
+have higher levels of non-dioxin like PCBs. 
+
+PC2 could be named dioxin because the dioxin POPs have the strongest influence on PC2 
+compared to the other variables. A person with a high PC2 score likely has high levels of 
+dioxin, followed by furan. 
+
 5. Make a **biplot** of PC1 vs PC2.
+```{r}
+biplot(pc, cex = 0.5, scale = 0)
+```
+
 
 > **Q4.** What structure among the 18 POPs does the biplot reveal?
+
+The bioplot reveals that the non-dioxin like PCBs are more closely related compared
+to the other POPs. This is evidenced by the small angles between the arrows for these POPs. 
 
 ## Part C — Clustering
 
@@ -103,16 +164,66 @@ R). Submit your knitted `.Rmd` (or a commented `.R` script) and a short write-up
    - **Hierarchical clustering** (`hclust`, Ward's method) on the standardized
      POPs. Plot the **dendrogram**, cut it into the same number of groups
      (`cutree`), and cross-tabulate against the k-means labels.
+     
+```{r}
+# k-means clustering
+
+# using silhouette to find optimal number of clusters
+avg_sil <- function(k){
+  km <- kmeans(pc$x, centers = k, nstart = 25)
+  sil <- silhouette(km$cluster, dist(X))
+  mean(sil[, 3])
+}
+k_vals <- 2:6
+avg_sil_vals <- sapply(k_vals, avg_sil)
+# k = 2 has the highest value
+
+# another way to use silhouette to find optimal number of clusters
+library(factoextra)
+fviz_nbclust(X, kmeans, method = "silhouette")
+
+km_2 <- kmeans(pc$x[, 1:3], centers = 2, nstart = 25)
+print(km_2)
+    
+```
+
+```{r}
+# hierarchial clustering
+hc <- hclust(dist(Xs), method = "ward.D2")  
+plot(hc, main = "dendrogram", xlab = "", sub = "", cex = 0.9)
+rect.hclust(hc, k = 2)
+# cutree(hc, k = 2)
+
+```
+
 
 > **Q5.** How many clusters does the silhouette analysis favor? Do k-means and
 > hierarchical clustering broadly agree? Describe each cluster in plain language
 > (e.g., "low overall burden," "high, PCB-dominated").
+
+The silhouette analysis favored two clusters. The k-means and hierarchial clustering generally
+agreed, as one can see on the dendrogram two clear clusters as well. The first cluster for PC1
+indicates an overall burden and the second cluster for PC2 indicates a dioxin/furan contrast. 
+
+
 
 ## Part D — Interpretation
 
 > **Q6.** You did not use telomere length anywhere in Parts B–C. Explain why PCA
 > and clustering are *descriptive/unsupervised*. For your own project, name one concrete way PCA
 > or clustering could be a useful *step* — and one thing they cannot tell you.
+
+PCA and clustering are unsupervised because the underlying dataset does not contain a response variable, 
+so there is no way to check the accuracy of the results. This is why they are considered only
+descriptive. 
+
+For my project, PCA could be useful in identifying which factors are most influential 
+in WBD disease transmission following flooding (e.g. increased pathogens in the environment, 
+disruptions in water treatment), should data on this exist. Clustering may be helpful in 
+identifying subgroups susceptible to increased WBDs rates following flooding. However, 
+neither PCA or clustering would be able to speak to any causal links, as they are meant only 
+for hypothesis generation or descriptive analyses. 
+
 
 # Starter code (fill in the blanks)
 
