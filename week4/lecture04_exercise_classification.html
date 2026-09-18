@@ -11,9 +11,9 @@
 
 <meta name="author" content="Your name:" />
 
-<meta name="date" content="2026-09-17" />
+<meta name="date" content="2026-09-18" />
 
-<title>Lecture 04 Exercise — Classification: KNN, Logistic Regression &amp; Model Evaluation</title>
+<title>Lecture 04 Exercise — Replicating a published beach-water classifier</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -1514,12 +1514,12 @@ border-radius: 0px;
 
 
 
-<h1 class="title toc-ignore">Lecture 04 Exercise — Classification: KNN,
-Logistic Regression &amp; Model Evaluation</h1>
-<h3 class="subtitle">PubH 6010 Independent Study · complete after the
-meeting</h3>
+<h1 class="title toc-ignore">Lecture 04 Exercise — Replicating a
+published beach-water classifier</h1>
+<h3 class="subtitle">PubH 6010 Independent Study · KNN, logistic
+regression &amp; model evaluation</h3>
 <h4 class="author">Your name:</h4>
-<h4 class="date">2026-09-17</h4>
+<h4 class="date">2026-09-18</h4>
 
 </div>
 
@@ -1528,36 +1528,22 @@ meeting</h3>
 <h1><span class="header-section-number">1</span> Why this matters for
 your project</h1>
 <p>Your project asks whether extreme-weather events change the risk of
-waterborne disease. One place that link is managed every day is the
-<strong>beach</strong>. Heavy rain washes sewage and runoff into the
-water, and fecal indicator bacteria (FIB) rise. Swimming in that water
-raises the risk of gastrointestinal illness.</p>
-<p>Chicago tests its beaches for <em>E. coli</em> each morning, but
-culture results take up to about 12 hours to come back. Managers
-therefore need a <strong>prediction</strong>: using what is known today,
-will the water exceed <strong>235 CFU/100 mL</strong>?</p>
-<p>This is a <strong>classification</strong> problem (exceed vs. not),
-and it has two features you will meet again in your own work:</p>
-<ul>
-<li><strong>The event is rare.</strong> Only about 1 in 7 beach-days
-exceeds the limit. That makes the overall error rate a misleading
-summary.</li>
-<li><strong>The data come in time order.</strong> How you split training
-and test data determines whether your performance estimate is
-honest.</li>
-</ul>
-<p>You will compare a nonparametric classifier (<strong>KNN</strong>)
-with a parametric one (<strong>logistic regression</strong>). You will
-then evaluate both with the tools from Lecture 04: the confusion matrix,
-sensitivity/specificity, Cohen’s κ, calibration, ROC/AUC, and threshold
-choice.</p>
-<p>As in Week 3, keep the <strong>prediction vs. causation</strong>
-distinction in mind throughout. A good predictor is not necessarily a
-cause.</p>
+waterborne disease. Beaches are where that link is managed daily: rain
+and wave action move fecal bacteria into swimming water, and swimming in
+contaminated water raises the risk of gastrointestinal illness. Chicago
+samples its Lake Michigan beaches every morning, but a laboratory result
+that arrives after swimmers are in the water is too late, so managers
+need a <strong>prediction</strong> built from conditions known that
+morning.</p>
+<p>In this exercise you <strong>replicate a published model</strong> on
+the authors’ own data, then evaluate it more thoroughly than the paper
+does. Replication is the fastest way to learn a method, and it puts you
+in a position to say something substantive about a paper rather than
+summarising it.</p>
 </div>
-<div id="the-paper-to-read-first" class="section level1" number="2">
-<h1><span class="header-section-number">2</span> The paper to read
-first</h1>
+<div id="the-paper-and-the-data" class="section level1" number="2">
+<h1><span class="header-section-number">2</span> The paper and the
+data</h1>
 <blockquote>
 <p>Elahi A, Shumway D, Kowalcyk M, Shrestha A, Caragea D, Caragea C,
 Dorevitch S. <strong>Machine learning, generalization, and transfer
@@ -1565,213 +1551,274 @@ learning for predicting the exceedance of fecal indicator bacteria
 thresholds at beaches.</strong> <em>Environmental Science &amp;
 Technology.</em> 2025;59(42):22386–22396. <a href="doi:10.1021/acs.est.5c02835" class="uri">doi:10.1021/acs.est.5c02835</a> (open access)</p>
 </blockquote>
-<p>Read the <strong>Introduction</strong> and the
-<strong>Methods</strong> sections on data splitting, logistic
-regression, and performance metrics. As you read, note:</p>
-<ol style="list-style-type: decimal">
-<li>how the authors split training and test data, and why;</li>
-<li>which performance metrics they report, and which common metric they
-leave out.</li>
-</ol>
-<p>The data you will use come from the City of Chicago project described
-in: Lucius N, et al. Predicting <em>E. coli</em> concentrations using
-limited qPCR deployments at Chicago beaches. <em>Water Research X.</em>
-2019;2:100016. <a href="doi:10.1016/j.wroa.2018.100016" class="uri">doi:10.1016/j.wroa.2018.100016</a> (open access; skim the
-Introduction).</p>
+<p>Read the <strong>Introduction</strong> and <strong>Materials and
+Methods</strong>, especially “Train/Test Data Splitting”, “Data
+Imputation”, “Feature Scaling”, “Hyperparameter Fine-Tuning” and
+“Evaluating Methods Performance”, plus <strong>Tables 1 and
+4</strong>.</p>
+<p><code>Data-CHI.csv</code> is the authors’ Chicago file, from the
+figshare archive cited in their Data and Code Sharing section. It holds
+daily enterococci (ENT) measured by qPCR at 19 Chicago beaches, with
+weather, wave, tide and solar variables linked by date. See
+<code>data_dictionary.Rmd</code>.</p>
+<p><strong>Outcome:</strong> exceedance of <strong>320 CCE/100
+mL</strong>, the paper’s threshold — half the EPA Beach Action Value of
+640 CCE, chosen to be more health-protective.</p>
 </div>
-<div id="the-data" class="section level1" number="3">
-<h1><span class="header-section-number">3</span> The data</h1>
-<p><code>beach_ecoli.csv</code> covers Chicago Lake Michigan beaches
-from 2006–2016: <strong>9,259 beach-days</strong> at 20 beaches. The
-outcome is <code>exceed</code> (1 if <em>E. coli</em> &gt; 235 CFU/100
-mL). Candidate predictors all describe the <strong>previous
-day</strong>:</p>
-<ul>
-<li>prior-day <em>E. coli</em> at the same beach,</li>
-<li>rainfall over the prior 48 hours,</li>
-<li>maximum temperature,</li>
-<li>wind speed,</li>
-<li>lake level,</li>
-<li>whether the river locks were opened into the lake (this happens
-during extreme rain).</li>
-</ul>
-<p>See <code>beach_ecoli_data_dictionary.Rmd</code> for every column.
-The data are public (City of Chicago, MIT License).</p>
-</div>
-<div id="your-tasks" class="section level1" number="4">
-<h1><span class="header-section-number">4</span> Your tasks</h1>
-<p>Work in R. You need only base R plus the <code>class</code> package,
-which installs with R. Submit your knitted <code>.Rmd</code> (or a
-commented <code>.R</code> script) and a short write-up (about 1–2 pages)
-answering the questions in <strong>bold</strong>.</p>
-<div id="part-a-set-up-and-set-a-baseline" class="section level2" number="4.1">
-<h2><span class="header-section-number">4.1</span> Part A — Set up and
-set a baseline</h2>
+<div id="your-tasks" class="section level1" number="3">
+<h1><span class="header-section-number">3</span> Your tasks</h1>
+<p>Use <strong>tidyverse</strong> (<code>readr</code>,
+<code>dplyr</code>, <code>tidyr</code>, <code>ggplot2</code>,
+<code>purrr</code>) plus <code>class</code> for KNN. Submit your knitted
+<code>.Rmd</code> and a 1–2 page write-up answering the questions in
+<strong>bold</strong>.</p>
+<div id="part-a-rebuild-their-analysis-dataset" class="section level2" number="3.1">
+<h2><span class="header-section-number">3.1</span> Part A — Rebuild
+their analysis dataset</h2>
+<p>Follow the authors’ own preprocessing (their notebook is in
+<code>github.com/aliielahi/ONR-WQ</code>):</p>
 <ol style="list-style-type: decimal">
-<li>Read the data and report the overall exceedance rate.</li>
-<li>Split the data <strong>by year</strong>:
-<ul>
-<li>training: 2006–2012</li>
-<li>validation: 2013–2014 (used to choose K)</li>
-<li>test: 2015–2016 (report results here, once)</li>
-</ul></li>
-<li>Compute the test error rate and sensitivity of an <strong>“always
-safe”</strong> rule that never predicts an exceedance.</li>
+<li>Keep years <strong>2016–2019</strong>.</li>
+<li>Recompute <code>doy</code> (day of year) and <code>tide_gtm</code>
+(1 if <code>tide</code> is above its mean).</li>
+<li>Define <code>exceed = ENT &gt; 320</code>.</li>
+<li>Use their <strong>12 features</strong>: <code>tide</code>,
+<code>tide_gtm</code>, <code>lograin3T</code>, <code>wet3</code>,
+<code>lograin7T</code>, <code>wet7</code>, <code>WVHT</code>,
+<code>Wtemp_B</code>, <code>rad</code>, <code>awind</code>,
+<code>owind</code>, <code>doy</code>. (These are what remains after they
+drop air temperature, dew point, wave period, turbidity and wind
+speed/direction — mostly variables that are unusable in Chicago or
+absent from their San Diego data.)</li>
+<li>Split exactly as the paper does: <strong>training = 2016–2018, test
+= 2019</strong>. There is no validation set.</li>
+<li>Report n and the percentage of negative samples for each split, and
+compare with <strong>Table 1</strong> of the paper.</li>
+<li>Report the missingness of each feature in the training years, then
+follow their preprocessing: impute missing values with a draw from the
+feature’s <strong>training</strong> mean and SD (“noisy average”), then
+<strong>min-max scale</strong> using training minima and maxima.</li>
 </ol>
 <blockquote>
-<p><strong>Q1.</strong> Lecture 04 splits data at random. Why is a split
-by year more honest for these data? (Hint: think about one storm, and
-check how Elahi et al. split theirs.) Why does the “always safe” rule
-show that error rate is a poor summary here?</p>
+<p><strong>Q1.</strong> Do your numbers match Table 1? Why does the
+paper split by year instead of at random, and how does it tune
+hyperparameters with no validation set? Look at the exceedance rate by
+year — what does that variation imply for a model trained on 2016–18 and
+used in 2019?</p>
 </blockquote>
 </div>
-<div id="part-b-knn" class="section level2" number="4.2">
-<h2><span class="header-section-number">4.2</span> Part B — KNN</h2>
-<ol start="4" style="list-style-type: decimal">
-<li>Use five predictors: <code>log10(ecoli_lag1)</code>,
-<code>rain_48h_in</code>, <code>tmax_lag1_f</code>,
-<code>wind_lag1_mph</code>, <code>lake_lag1_ft</code>.
-<strong>Standardize</strong> them using the <em>training</em> means and
-SDs.</li>
-<li>Fit KNN on the training set for K = 1, 5, 25, 100, 400. For each K,
-compute the <strong>validation</strong> error rate, sensitivity (at
-majority vote), and AUC. Carry forward the K with the highest validation
-AUC.</li>
+<div id="part-b-knn-tuned-their-way" class="section level2" number="3.2">
+<h2><span class="header-section-number">3.2</span> Part B — KNN, tuned
+their way</h2>
+<ol start="8" style="list-style-type: decimal">
+<li>Choose K by <strong>4-fold cross-validation inside the training
+years</strong> (the paper’s approach), scoring by AUC. Try K = 1, 5, 15,
+25, 50, 100, 200, and report cross-validated AUC and sensitivity for
+each.</li>
 </ol>
 <blockquote>
-<p><strong>Q2.</strong> As K grows, what happens to the error rate and
-to sensitivity? Explain the pattern using the bias–variance trade-off
-(slide 12) and class imbalance (slide 37). If you had chosen K by error
-rate alone, what kind of model would you have picked?</p>
+<p><strong>Q2.</strong> How do AUC and sensitivity behave as K grows,
+and why do they behave differently? Relate this to the bias–variance
+trade-off (slide 12) and to class imbalance (slide 37).</p>
 </blockquote>
 </div>
-<div id="part-c-logistic-regression" class="section level2" number="4.3">
-<h2><span class="header-section-number">4.3</span> Part C — Logistic
+<div id="part-c-logistic-regression" class="section level2" number="3.3">
+<h2><span class="header-section-number">3.3</span> Part C — Logistic
 regression</h2>
-<ol start="6" style="list-style-type: decimal">
-<li>Fit a logistic regression on the training set with the same five
-predictors. Report odds ratios with 95% CIs.</li>
+<ol start="9" style="list-style-type: decimal">
+<li>Fit a logistic regression on the training years with the same 12
+features and report odds ratios with 95% CIs, sorted by p-value.</li>
 </ol>
 <blockquote>
-<p><strong>Q3.</strong> Interpret the ORs for rain and for prior-day
-<em>E. coli</em> in plain language. Are these causal effects of rain?
-Why or why not?</p>
+<p><strong>Q3.</strong> Which features carry signal? Is rainfall among
+them, and does that match your expectation? The paper reports that wind
+and tide dominate its Chicago feature importance — do you see the same?
+(Because the features are min-max scaled, each OR compares the top of
+the training range with the bottom, so they are comparable across
+features.)</p>
 </blockquote>
 </div>
-<div id="part-d-evaluate-on-the-test-set" class="section level2" number="4.4">
-<h2><span class="header-section-number">4.4</span> Part D — Evaluate on
-the test set</h2>
-<ol start="7" style="list-style-type: decimal">
-<li>For both models, predict test-set probabilities. Then:
-<ul>
-<li>Classify at <strong>0.5</strong> and report the confusion matrix,
-error rate, sensitivity, specificity, and Cohen’s κ.</li>
-<li>Compute each model’s <strong>AUC</strong> and plot both <strong>ROC
-curves</strong> on one graph.</li>
-<li>Make a <strong>calibration plot</strong> for logistic regression
-using decile bins of predicted probability.</li>
-</ul></li>
-<li>Suppose a missed exceedance costs <strong>5×</strong> as much as an
-unnecessary swim advisory. The cost-based threshold is t = c_FP/(c_FP +
-c_FN). Recompute the metrics for both models at that threshold.</li>
+<div id="part-d-evaluate-on-2019" class="section level2" number="3.4">
+<h2><span class="header-section-number">3.4</span> Part D — Evaluate on
+2019</h2>
+<ol start="10" style="list-style-type: decimal">
+<li>Predict for 2019 with both models. Report <strong>sensitivity,
+specificity, PPV, NPV, weighted F1 and AUC</strong> — the paper’s
+metrics. Put their Chicago-to-Chicago logistic and random-forest rows
+from <strong>Table 4</strong> in the same table for comparison.</li>
+<li>Compare the <strong>mean predicted probability</strong> with the
+observed exceedance rate, and plot a <strong>calibration curve</strong>
+using decile bins.</li>
 </ol>
 <blockquote>
-<p><strong>Q4.</strong> At 0.5, how does logistic regression compare
-with the “always safe” rule? Do the AUC and the calibration plot say the
-model is useless? Explain the apparent contradiction.</p>
+<p><strong>Q4.</strong> How close is your AUC to theirs? Now compare
+operating points: at a 0.5 cutoff, how many days does your model flag,
+and how many does theirs? What does it mean that two models can share an
+AUC and behave so differently?</p>
 </blockquote>
 <blockquote>
-<p><strong>Q5.</strong> What happens to the error rate, sensitivity, and
-κ when you move to the cost-based threshold? Which model and threshold
-would you recommend to the Chicago Park District, and what value
-judgment does that recommendation rest on?</p>
+<p><strong>Q5.</strong> What does the calibration plot show that AUC
+cannot? Why does the paper never report it?</p>
 </blockquote>
-</div>
-<div id="part-e-interpretation" class="section level2" number="4.5">
-<h2><span class="header-section-number">4.5</span> Part E —
-Interpretation</h2>
+<ol start="12" style="list-style-type: decimal">
+<li><strong>Diagnose the over-prediction.</strong> Compare the range of
+<code>tide</code> in the training years with its range in 2019 — and
+look at the <em>scaled</em> test values, remembering that min-max
+scaling puts training data in [0, 1]. Then refit without
+<code>tide</code> and <code>tide_gtm</code> and compare AUC, mean
+predicted probability, sensitivity and specificity.</li>
+</ol>
 <blockquote>
-<p><strong>Q6.</strong> Elahi et al. report sensitivity, specificity,
-PPV, NPV, and AUC, but not accuracy. Why? In your own model, lock
-openings (extreme-rain events) are rare. What does that mean for
-predicting exactly the events your dissertation cares about? Finally,
-could this model tell you whether lock openings <em>cause</em>
-exceedances? Name the kind of design you would need instead.</p>
+<p><strong>Q6.</strong> What is wrong with lake level as a predictor
+here? (Look up Lake Michigan levels in 2019.) What happens to AUC when
+you drop it, and what happens to the probabilities? If AUC alone selects
+models, which model wins — and is that the one you would deploy?</p>
 </blockquote>
-<p><em>Optional bonus:</em> <code>ecoli_cat</code> has three levels
-(<code>low</code>/<code>moderate</code>/<code>exceed</code>). Fit a
-baseline-category logistic model with <code>nnet::multinom()</code> (the
-equivalent of slides 24–31) and look at which classes it ever
-predicts.</p>
+</div>
+<div id="part-e-thresholds" class="section level2" number="3.5">
+<h2><span class="header-section-number">3.5</span> Part E —
+Thresholds</h2>
+<ol start="13" style="list-style-type: decimal">
+<li>Using the model <strong>without</strong> the lake-level terms,
+compare thresholds: 0.5, the training prevalence, and the value that
+gives 85% specificity.</li>
+</ol>
+<blockquote>
+<p><strong>Q7.</strong> The USGS target quoted in the paper is
+sensitivity 0.50 with specificity 0.85. Do you reach it? Do any of the
+models in their Table 4? Which threshold would you recommend to the
+Chicago Park District, and what value judgment does that rest on? One
+catch: with no validation set, you had to read that threshold off the
+test year — the same thing slide 41 does. Why is that optimistic, and
+what would you do instead?</p>
+</blockquote>
+</div>
+<div id="part-f-read-against-the-paper" class="section level2" number="3.6">
+<h2><span class="header-section-number">3.6</span> Part F — Read against
+the paper</h2>
+<blockquote>
+<p><strong>Q8.</strong> Write a short critique (half a page). Useful
+angles: their feature set was fixed by what Chicago and San Diego have
+in common rather than by what predicts enterococci in Chicago; wave
+height is more than half missing in the training years and is imputed
+from its own mean and SD; <code>tide_gtm</code> is defined using the
+mean of the whole series, including the test year; and their Table 4
+reports PPV 0.990 alongside sensitivity 0.220 for the Chicago logistic
+model, which is hard to reconcile with 20.8% prevalence. Also: can any
+of this establish that rainfall <em>causes</em> exceedances? What design
+would?</p>
+</blockquote>
+<p><em>Optional:</em> fit a three-class model (below half-BAV, half-BAV
+to BAV, above BAV) with <code>nnet::multinom()</code> and see which
+classes it ever predicts (slides 24–31).</p>
 </div>
 </div>
-<div id="starter-code-fill-in-the-blanks" class="section level1" number="5">
-<h1><span class="header-section-number">5</span> Starter code (fill in
-the blanks)</h1>
-<pre class="r"><code>library(class)
-d &lt;- read.csv(&quot;beach_ecoli.csv&quot;)
-d$log_ecoli_lag1 &lt;- log10(d$ecoli_lag1)
-vars  &lt;- c(&quot;log_ecoli_lag1&quot;, &quot;rain_48h_in&quot;, &quot;tmax_lag1_f&quot;, &quot;wind_lag1_mph&quot;, &quot;lake_lag1_ft&quot;)
-train &lt;- subset(d, year &lt;= 2012)
-valid &lt;- subset(d, year %in% 2013:2014)
-test  &lt;- subset(d, year &gt;= 2015)
+<div id="starter-code" class="section level1" number="4">
+<h1><span class="header-section-number">4</span> Starter code</h1>
+<pre class="r"><code>library(readr); library(dplyr); library(tidyr); library(ggplot2); library(purrr); library(class)
 
-# Helpers (provided): metrics from observed y and predicted class yhat; AUC from probabilities p
+chi &lt;- read_csv(&quot;Data-CHI.csv&quot;, show_col_types = FALSE) |&gt;
+  filter(year &gt;= 2016, year &lt;= ____) |&gt;
+  mutate(doy      = as.integer(format(date, &quot;%j&quot;)),
+         tide_gtm = as.integer(tide &gt; mean(tide, na.rm = TRUE)),
+         exceed   = as.integer(ENT &gt; ____))
+
+feats &lt;- c(&quot;tide&quot;, &quot;tide_gtm&quot;, &quot;lograin3T&quot;, &quot;wet3&quot;, &quot;lograin7T&quot;, &quot;wet7&quot;,
+           &quot;WVHT&quot;, &quot;Wtemp_B&quot;, &quot;rad&quot;, &quot;awind&quot;, &quot;owind&quot;, &quot;doy&quot;)
+train &lt;- filter(chi, year &lt;= 2018)
+test  &lt;- filter(chi, year == ____)
+
+# Missingness in the training years
+train |&gt; select(all_of(feats)) |&gt;
+  summarise(across(everything(), ~ mean(is.na(.x)))) |&gt;
+  pivot_longer(everything(), names_to = &quot;feature&quot;, values_to = &quot;prop_missing&quot;) |&gt;
+  arrange(desc(prop_missing))
+
+# Their preprocessing: noisy-average imputation, then min-max scaling, TRAINING stats only
+set.seed(2026)
+stats &lt;- train |&gt; select(all_of(feats)) |&gt;
+  summarise(across(everything(), list(m = ~mean(.x, na.rm = TRUE), s = ~sd(.x, na.rm = TRUE),
+                                      lo = ~min(.x, na.rm = TRUE), hi = ~max(.x, na.rm = TRUE))))
+impute_scale &lt;- function(df) {
+  out &lt;- df |&gt; select(all_of(feats))
+  for (v in feats) {
+    x &lt;- out[[v]]; na &lt;- is.na(x)
+    if (any(na)) x[na] &lt;- rnorm(sum(na), stats[[paste0(v, &quot;_m&quot;)]], stats[[paste0(v, &quot;_s&quot;)]])
+    out[[v]] &lt;- (x - stats[[paste0(v, &quot;_lo&quot;)]]) /
+                (stats[[paste0(v, &quot;_hi&quot;)]] - stats[[paste0(v, &quot;_lo&quot;)]])
+  }
+  as.data.frame(out)
+}
+X_train &lt;- impute_scale(train); X_test &lt;- impute_scale(____)
+y_train &lt;- train$exceed;        y_test &lt;- test$exceed
+
+# Provided: the paper&#39;s metrics (no accuracy) and AUC
 metrics &lt;- function(y, yhat) {
   tp &lt;- sum(yhat == 1 &amp; y == 1); fn &lt;- sum(yhat == 0 &amp; y == 1)
-  fp &lt;- sum(yhat == 1 &amp; y == 0); tn &lt;- sum(yhat == 0 &amp; y == 0); n &lt;- length(y)
-  O &lt;- (tp + tn) / n; E &lt;- ((tp + fp) * (tp + fn) + (fn + tn) * (fp + tn)) / n^2
-  round(c(error = (fp + fn) / n, sens = tp / (tp + fn), spec = tn / (tn + fp),
-          kappa = (O - E) / (1 - E)), 3)
+  fp &lt;- sum(yhat == 1 &amp; y == 0); tn &lt;- sum(yhat == 0 &amp; y == 0)
+  sens &lt;- tp / (tp + fn); spec &lt;- tn / (tn + fp)
+  ppv  &lt;- ifelse(tp + fp &gt; 0, tp / (tp + fp), NA); npv &lt;- ifelse(tn + fn &gt; 0, tn / (tn + fn), NA)
+  pf1  &lt;- 2 * ppv * sens / (ppv + sens); nf1 &lt;- 2 * npv * spec / (npv + spec)
+  w    &lt;- c(sum(y == 1), sum(y == 0)) / length(y)
+  round(c(sens = sens, spec = spec, PPV = ppv, NPV = npv, WF1 = w[1] * pf1 + w[2] * nf1), 3)
 }
 auc &lt;- function(p, y) { r &lt;- rank(p); n1 &lt;- sum(y); n0 &lt;- sum(1 - y)
   (sum(r[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0) }
 
-# KNN: scale with TRAINING means/SDs; knn()&#39;s &quot;prob&quot; is the WINNING class&#39;s vote share
-mu &lt;- colMeans(train[, vars]); s &lt;- apply(train[, vars], 2, sd)
-Xtr &lt;- scale(train[, vars], mu, s); Xva &lt;- scale(valid[, vars], mu, s); Xte &lt;- scale(___, mu, s)
-knn_p1 &lt;- function(Xnew, k) {
-  set.seed(2026)                             # ties are broken at random
-  f &lt;- knn(Xtr, Xnew, cl = factor(train$exceed), k = k, prob = TRUE)
+knn_p1 &lt;- function(Xfit, yfit, Xnew, k) {
+  set.seed(2026)
+  f &lt;- knn(Xfit, Xnew, cl = factor(yfit, levels = 0:1), k = k, prob = TRUE)
   ifelse(f == &quot;1&quot;, attr(f, &quot;prob&quot;), 1 - attr(f, &quot;prob&quot;))   # P(exceed)
 }
-# for (k in c(1, 5, 25, 100, 400)) { p &lt;- knn_p1(Xva, k); ... metrics(valid$exceed, 1*(p &gt; 0.5)); auc(p, valid$exceed) }
 
-# Logistic regression
-fit &lt;- glm(exceed ~ ___, family = binomial(), data = train)
-# exp(cbind(OR = coef(fit), confint.default(fit)))
-p_logit &lt;- predict(fit, newdata = test, type = &quot;___&quot;)
+# 4-fold CV inside the training years
+set.seed(2026)
+fold &lt;- sample(rep(1:4, length.out = nrow(X_train)))
+# for each K: for each fold f, fit on fold != f, score on fold == f, average the AUCs
 
-# ROC points for a plot: for each threshold t, FPR = mean(p[y == 0] &gt;= t), TPR = mean(p[y == 1] &gt;= t)
-# Calibration: bins &lt;- cut(p_logit, quantile(p_logit, 0:10 / 10), include.lowest = TRUE)
-#              plot(tapply(p_logit, bins, mean), tapply(test$exceed, bins, mean)); abline(0, 1)</code></pre>
+fit &lt;- glm(exceed ~ ., family = binomial(), data = bind_cols(X_train, exceed = y_train))
+p_logit &lt;- predict(fit, newdata = X_test, type = &quot;____&quot;)
+
+# Calibration
+# tibble(p = p_logit, y = y_test) |&gt; mutate(bin = ntile(p, 10)) |&gt; group_by(bin) |&gt;
+#   summarise(mean_pred = mean(p), observed = mean(y)) |&gt;
+#   ggplot(aes(mean_pred, observed)) + geom_abline(linetype = 2) + geom_point() +
+#   coord_equal(xlim = c(0, 1), ylim = c(0, 1)) + theme_bw()</code></pre>
 </div>
-<div id="what-good-looks-like" class="section level1" number="6">
-<h1><span class="header-section-number">6</span> What “good” looks
+<div id="what-good-looks-like" class="section level1" number="5">
+<h1><span class="header-section-number">5</span> What “good” looks
 like</h1>
 <p>A correct submission:</p>
 <ol style="list-style-type: decimal">
-<li>uses the year-based split and can say why;</li>
-<li>benchmarks against the “always safe” rule;</li>
-<li>scales KNN predictors with training statistics and explains why
-error rate is the wrong criterion for choosing K;</li>
-<li>interprets the ORs as predictive associations, not causal
-effects;</li>
-<li>shows that a model can be useless at 0.5 yet informative, and treats
-the choice of threshold as an explicit value judgment;</li>
-<li>in Q6, separates prediction from causation.</li>
+<li>reproduces Table 1 exactly and can explain why the split is
+temporal;</li>
+<li>tunes K by cross-validation inside the training years, not on the
+test year;</li>
+<li>reports the paper’s metric set and notices that accuracy is missing
+for a reason;</li>
+<li>shows that a model can match a published AUC while behaving
+completely differently at a threshold;</li>
+<li>identifies lake level as an extrapolating predictor from the range
+comparison, and states plainly that dropping it makes AUC
+<strong>worse</strong> and the model <strong>better</strong>;</li>
+<li>treats the threshold as a public-health judgment, and flags that
+choosing it on the test year is optimistic.</li>
 </ol>
-<p>Numerical answers should land near:</p>
+<p>Your numbers should land near:</p>
 <ul>
-<li>Exceedance: about 14% overall and about 12% in the test years.</li>
-<li>“Always safe” test error: about 0.12.</li>
-<li>Validation AUC increases with K, and K = 400 is best.</li>
-<li>Logistic ORs: about 1.2 per inch of rain and about 2.3 per 10-fold
-increase in prior-day <em>E. coli</em>.</li>
-<li>At 0.5, logistic sensitivity is about 0 and error about 0.12.</li>
-<li>Test AUC: about 0.69 for logistic and about 0.65 for KNN.</li>
-<li>At the cost-based threshold (t = 1/6), logistic sensitivity is about
-0.4 and specificity about 0.8.</li>
+<li>Training 4,404 beach-days and test 1,900, with 68.143% and 79.158%
+negative (Table 1 of the paper).</li>
+<li>Exceedance by year: 0.155, 0.288, 0.405, 0.208.</li>
+<li>Missingness in the training years: <code>WVHT</code> 59%, 7-day rain
+42%, 3-day rain 22%, water temperature 19%.</li>
+<li>Cross-validated AUC peaks near K = 15, around 0.68.</li>
+<li>Logistic AUC on 2019 about 0.70, against 0.693 in their Table 4 —
+but sensitivity about 0.99 and specificity about 0.06, against their
+0.220 and 0.966.</li>
+<li>Mean predicted probability about 0.68 against an observed
+0.208.</li>
+<li>Dropping the lake-level terms: AUC falls to about 0.63, mean
+predicted probability about 0.33, specificity about 0.96.</li>
 </ul>
 </div>
 

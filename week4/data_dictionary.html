@@ -11,7 +11,7 @@
 
 
 
-<title>Data dictionary — beach_ecoli.csv</title>
+<title>Data dictionary — Data-CHI.csv</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -1512,34 +1512,43 @@ border-radius: 0px;
 
 
 
-<h1 class="title toc-ignore">Data dictionary — beach_ecoli.csv</h1>
+<h1 class="title toc-ignore">Data dictionary — Data-CHI.csv</h1>
 
 </div>
 
 
-<p><strong>Source.</strong> City of Chicago <em>Clear Water</em>
-project, the beach water-quality prediction work described in Lucius N,
-Rose K, Osborn C, Sweeney ME, Chesak R, Beslow S, Schenk T
-Jr. <em>Predicting E. coli concentrations using limited qPCR deployments
-at Chicago beaches.</em> <strong>Water Research X.</strong>
-2019;2:100016. <a href="doi:10.1016/j.wroa.2018.100016" class="uri">doi:10.1016/j.wroa.2018.100016</a>.</p>
-<p><strong>Provenance.</strong> The file was built by
-<code>prepare_beach_ecoli.R</code> from <code>Data/df.Rds</code> in the
-City’s public repository
-(<code>github.com/Chicago/e-coli-beach-predictions</code>, commit
-<code>dd07219</code>, MIT License). The <em>E. coli</em> results come
-from Chicago Park District beach monitoring.</p>
-<pre class="r"><code>d &lt;- read.csv(&quot;beach_ecoli.csv&quot;)
-dim(d)                      # 9259 x 14</code></pre>
-<pre><code>## [1] 9259   14</code></pre>
-<pre class="r"><code>mean(d$exceed)              # exceedance prevalence</code></pre>
-<pre><code>## [1] 0.1386759</code></pre>
-<pre class="r"><code>table(d$year)</code></pre>
-<pre><code>## 
-## 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016 
-##  742  885  772  800  788  892  836  911  832  905  896</code></pre>
-<div id="outcomes" class="section level2">
-<h2>Outcomes</h2>
+<p><strong>Source.</strong> The Chicago dataset released with Elahi A,
+Shumway D, Kowalcyk M, Shrestha A, Caragea D, Caragea C, Dorevitch S.
+<em>Machine learning, generalization, and transfer learning for
+predicting the exceedance of fecal indicator bacteria thresholds at
+beaches.</em> <strong>Environ Sci Technol.</strong>
+2025;59(42):22386–22396. Downloaded from the figshare archive cited in
+the paper’s Data and Code Sharing section.</p>
+<p>Measurements: Chicago Park District beach monitoring (enterococci by
+qPCR, EPA Method 1609.1, collected 6–8 AM daily in season); weather from
+the Midwest Regional Climate Center (Midway Airport); wave and tide from
+NOAA’s National Data Buoy Center; solar irradiance from NREL’s National
+Solar Radiation Database.</p>
+<pre class="r"><code>library(readr); library(dplyr)
+chi &lt;- read_csv(&quot;Data-CHI.csv&quot;, show_col_types = FALSE)
+dim(chi)</code></pre>
+<pre><code>## [1] 10014    35</code></pre>
+<pre class="r"><code>count(chi, year)</code></pre>
+<pre><code>## # A tibble: 6 x 2
+##    year     n
+##   &lt;dbl&gt; &lt;int&gt;
+## 1  2016   624
+## 2  2017  1914
+## 3  2018  1866
+## 4  2019  1900
+## 5  2021  1698
+## 6  2022  2012</code></pre>
+<p>The file covers 2016–2019 and 2021–2022 at 19 beaches. The paper
+analyses <strong>2016–2019 only</strong>, which gives 6,304 beach-days:
+4,404 in 2016–18 (training) and 1,900 in 2019 (testing), matching its
+Table 1.</p>
+<div id="outcome" class="section level2">
+<h2>Outcome</h2>
 <table>
 <colgroup>
 <col width="50%" />
@@ -1553,79 +1562,123 @@ dim(d)                      # 9259 x 14</code></pre>
 </thead>
 <tbody>
 <tr class="odd">
-<td><code>ecoli</code></td>
-<td><em>E. coli</em>, CFU/100 mL: geometric mean of two culture
-readings. <strong>This is the outcome; never use it as a
+<td><code>ENT</code></td>
+<td>Enterococci, qPCR, CCE/100 mL. <strong>The outcome; never a
 predictor.</strong></td>
 </tr>
 <tr class="even">
-<td><code>exceed</code></td>
-<td><strong>Primary outcome.</strong> 1 if <code>ecoli</code> &gt; 235
-CFU/100 mL (Chicago swim-advisory threshold), else 0</td>
-</tr>
-<tr class="odd">
-<td><code>ecoli_cat</code></td>
-<td>Bonus outcome: <code>low</code> (≤126, the 1986 EPA geometric-mean
-criterion), <code>moderate</code> (126–235), <code>exceed</code>
-(&gt;235)</td>
+<td><code>logENT</code></td>
+<td>log10 of <code>ENT</code></td>
 </tr>
 </tbody>
 </table>
+<p>The paper’s classification outcome is <code>ENT &gt; 320</code>
+CCE/100 mL: half the EPA Beach Action Value of 640 CCE for qPCR-measured
+enterococci, chosen to be more health-protective than the BAV itself.
+The BAV corresponds to about 32 illnesses per 1,000 swimmers.</p>
 </div>
-<div id="predictors-all-from-the-previous-day" class="section level2">
-<h2>Predictors (all from the previous day)</h2>
-<p>Samples are collected in the morning, so only information from the
-previous day is available when the decision is made. Using same-day rain
-would leak information from the future.</p>
+<div id="the-papers-12-features" class="section level2">
+<h2>The paper’s 12 features</h2>
 <table>
 <colgroup>
-<col width="50%" />
-<col width="50%" />
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
 </colgroup>
 <thead>
 <tr class="header">
 <th>Column</th>
 <th>Meaning</th>
+<th>% missing, 2016–18</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td><code>ecoli_lag1</code></td>
-<td><em>E. coli</em> at the same beach on the previous day (CFU/100 mL);
-log-transform before use</td>
+<td><code>tide</code></td>
+<td>Lake Michigan water level, metres</td>
+<td>0</td>
 </tr>
 <tr class="even">
-<td><code>rain_lag1_in</code></td>
-<td>Rainfall on the previous day, inches</td>
+<td><code>tide_gtm</code></td>
+<td>1 if <code>tide</code> exceeds its mean (recomputed in their
+code)</td>
+<td>0</td>
 </tr>
 <tr class="odd">
-<td><code>rain_48h_in</code></td>
-<td>Rainfall over the two previous days, inches</td>
+<td><code>lograin3T</code></td>
+<td>Log cumulative rainfall, prior 3 days (72 h)</td>
+<td>22</td>
 </tr>
 <tr class="even">
-<td><code>tmax_lag1_f</code></td>
-<td>Maximum air temperature on the previous day, °F</td>
+<td><code>wet3</code></td>
+<td>Any rain in the prior 3 days</td>
+<td>22</td>
 </tr>
 <tr class="odd">
-<td><code>wind_lag1_mph</code></td>
-<td>Mean wind speed on the previous day, mph</td>
+<td><code>lograin7T</code></td>
+<td>Log cumulative rainfall, prior 7 days (168 h)</td>
+<td>42</td>
 </tr>
 <tr class="even">
-<td><code>lake_lag1_ft</code></td>
-<td>Lake Michigan water level on the previous day, ft above datum</td>
+<td><code>wet7</code></td>
+<td>Any rain in the prior 7 days</td>
+<td>42</td>
 </tr>
 <tr class="odd">
-<td><code>lock_open_lag1</code></td>
-<td>1 if the O’Brien, Chicago River Controlling Works, or Wilmette lock
-was opened to release river water into the lake on the previous day (an
-extreme-rain, sewer-overflow event). Only 93 rows.</td>
+<td><code>WVHT</code></td>
+<td>Significant wave height, m</td>
+<td>59</td>
+</tr>
+<tr class="even">
+<td><code>Wtemp_B</code></td>
+<td>Water temperature, °C</td>
+<td>19</td>
+</tr>
+<tr class="odd">
+<td><code>rad</code></td>
+<td>Total prior-day direct normal solar irradiance</td>
+<td>2</td>
+</tr>
+<tr class="even">
+<td><code>awind</code></td>
+<td>Alongshore wind speed</td>
+<td>2</td>
+</tr>
+<tr class="odd">
+<td><code>owind</code></td>
+<td>Offshore wind speed</td>
+<td>2</td>
+</tr>
+<tr class="even">
+<td><code>doy</code></td>
+<td>Day of year (recomputed in their code)</td>
+<td>0</td>
 </tr>
 </tbody>
 </table>
+<p>The authors fill missing values with a random draw from each
+feature’s mean and SD (“noisy average”), then min-max scale, both using
+training statistics only.</p>
+</div>
+<div id="columns-their-code-drops" class="section level2">
+<h2>Columns their code drops</h2>
+<p><code>atemp</code>, <code>dtemp</code> (100% missing for Chicago),
+<code>APD</code>, <code>DPD</code>, <code>turbidity</code>,
+<code>WDIR</code>, <code>WSPD</code>, <code>Precip24</code>,
+<code>PrecipSum6</code>, <code>solar_noon</code>, <code>dtide_1</code>,
+<code>dtide_2</code>, plus identifiers. The feature set is the
+<strong>intersection</strong> of what Chicago and San Diego both have,
+since the paper’s aim is transferring models between the two cities.
+Turbidity, for instance, is present and informative for Chicago but
+absent from the San Diego file, so it never enters the models.</p>
 </div>
 <div id="identifiers" class="section level2">
 <h2>Identifiers</h2>
 <table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Column</th>
@@ -1635,37 +1688,45 @@ extreme-rain, sewer-overflow event). Only 93 rows.</td>
 <tbody>
 <tr class="odd">
 <td><code>beach</code></td>
-<td>Beach name (20 beaches)</td>
+<td>Beach name (19 beaches)</td>
 </tr>
 <tr class="even">
-<td><code>date</code></td>
-<td>Sample date</td>
+<td><code>beach_area</code></td>
+<td><code>SB</code>, <code>CB</code>, <code>NB</code> — south, central,
+north group. The authors note weather is nearly identical within a
+group.</td>
 </tr>
 <tr class="odd">
-<td><code>year</code></td>
-<td>Calendar year; use it for the train/validation/test split</td>
-</tr>
-<tr class="even">
-<td><code>day_of_year</code></td>
-<td>Day of year (swim season, late May to mid-September)</td>
+<td><code>date</code>, <code>year</code>, <code>month</code>,
+<code>day</code></td>
+<td>Sample date; <code>year</code> defines the split</td>
 </tr>
 </tbody>
 </table>
 </div>
-<div id="limitations" class="section level2">
-<h2>Limitations</h2>
+<div id="two-versions-of-this-file-exist" class="section level2">
+<h2>Two versions of this file exist</h2>
+<p>The authors’ GitHub repository
+(<code>github.com/aliielahi/ONR-WQ</code>, reference 27) contains a file
+with the same name whose solar irradiance column differs: 0–757 with 813
+zeros there, versus 4–11,867 with none on figshare, correlated at only r
+= 0.30. The figshare values match the “total prior-day DNI” described in
+the Methods. <strong>This exercise uses the figshare copy</strong>,
+which is the one the paper cites.</p>
+</div>
+<div id="limitations-to-keep-in-mind" class="section level2">
+<h2>Limitations to keep in mind</h2>
 <ul>
-<li><strong>Complete-case subset.</strong> The analytic file includes
-9,259 of 15,464 sampled beach-days. A row is kept only if the same beach
-was also sampled the day before and weather data are complete.</li>
-<li><strong>City-wide weather.</strong> Weather comes from the (now
-discontinued) Dark Sky API, as redistributed by the City, so every beach
-shares the same values on a given day. Beach-level waves and turbidity
-are not included.</li>
-<li><strong>Correlated rows.</strong> Beaches sampled on the same day
-are correlated, and conditions shift across years (for example, lake
-level was higher in 2013–2016). The data suit prediction exercises;
-<code>glm()</code> standard errors understate uncertainty.</li>
+<li><strong>Beaches are not independent.</strong> 19 beaches share
+city-wide weather; <code>glm()</code> standard errors understate
+uncertainty.</li>
+<li><strong>Conditions shift across years.</strong> Lake Michigan rose
+from a mean of 176.9 m (2016) to 177.4 m (2019), a record high, so the
+test year sits largely outside the training range. Exceedance also moves
+from 15.5% to 40.5% across the training years.</li>
+<li><strong>qPCR, not culture.</strong> These values are not comparable
+with culture-based <em>E. coli</em> thresholds such as the 235 CFU/100
+mL used for Chicago swim advisories.</li>
 </ul>
 </div>
 

@@ -1,0 +1,74 @@
+---
+title: "Data dictionary — Data-CHI.csv"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+**Source.** The Chicago dataset released with Elahi A, Shumway D, Kowalcyk M, Shrestha A, Caragea D, Caragea C, Dorevitch S. *Machine learning, generalization, and transfer learning for predicting the exceedance of fecal indicator bacteria thresholds at beaches.* **Environ Sci Technol.** 2025;59(42):22386–22396. Downloaded from the figshare archive cited in the paper's Data and Code Sharing section.
+
+Measurements: Chicago Park District beach monitoring (enterococci by qPCR, EPA Method 1609.1, collected 6–8 AM daily in season); weather from the Midwest Regional Climate Center (Midway Airport); wave and tide from NOAA's National Data Buoy Center; solar irradiance from NREL's National Solar Radiation Database.
+
+```{r peek}
+library(readr); library(dplyr)
+chi <- read_csv("Data-CHI.csv", show_col_types = FALSE)
+dim(chi)
+count(chi, year)
+```
+
+The file covers 2016–2019 and 2021–2022 at 19 beaches. The paper analyses **2016–2019 only**, which gives 6,304 beach-days: 4,404 in 2016–18 (training) and 1,900 in 2019 (testing), matching its Table 1.
+
+## Outcome
+
+| Column | Meaning |
+|---|---|
+| `ENT` | Enterococci, qPCR, CCE/100 mL. **The outcome; never a predictor.** |
+| `logENT` | log10 of `ENT` |
+
+The paper's classification outcome is `ENT > 320` CCE/100 mL: half the EPA Beach Action Value of 640 CCE for qPCR-measured enterococci, chosen to be more health-protective than the BAV itself. The BAV corresponds to about 32 illnesses per 1,000 swimmers.
+
+## The paper's 12 features
+
+| Column | Meaning | % missing, 2016–18 |
+|---|---|---|
+| `tide` | Lake Michigan water level, metres | 0 |
+| `tide_gtm` | 1 if `tide` exceeds its mean (recomputed in their code) | 0 |
+| `lograin3T` | Log cumulative rainfall, prior 3 days (72 h) | 22 |
+| `wet3` | Any rain in the prior 3 days | 22 |
+| `lograin7T` | Log cumulative rainfall, prior 7 days (168 h) | 42 |
+| `wet7` | Any rain in the prior 7 days | 42 |
+| `WVHT` | Significant wave height, m | 59 |
+| `Wtemp_B` | Water temperature, °C | 19 |
+| `rad` | Total prior-day direct normal solar irradiance | 2 |
+| `awind` | Alongshore wind speed | 2 |
+| `owind` | Offshore wind speed | 2 |
+| `doy` | Day of year (recomputed in their code) | 0 |
+
+The authors fill missing values with a random draw from each feature's mean and SD ("noisy average"), then min-max scale, both using training statistics only.
+
+## Columns their code drops
+
+`atemp`, `dtemp` (100% missing for Chicago), `APD`, `DPD`, `turbidity`, `WDIR`, `WSPD`, `Precip24`, `PrecipSum6`, `solar_noon`, `dtide_1`, `dtide_2`, plus identifiers. The feature set is the **intersection** of what Chicago and San Diego both have, since the paper's aim is transferring models between the two cities. Turbidity, for instance, is present and informative for Chicago but absent from the San Diego file, so it never enters the models.
+
+## Identifiers
+
+| Column | Meaning |
+|---|---|
+| `beach` | Beach name (19 beaches) |
+| `beach_area` | `SB`, `CB`, `NB` — south, central, north group. The authors note weather is nearly identical within a group. |
+| `date`, `year`, `month`, `day` | Sample date; `year` defines the split |
+
+## Two versions of this file exist
+
+The authors' GitHub repository (`github.com/aliielahi/ONR-WQ`, reference 27) contains a file with the same name whose solar irradiance column differs: 0–757 with 813 zeros there, versus 4–11,867 with none on figshare, correlated at only r = 0.30. The figshare values match the "total prior-day DNI" described in the Methods. **This exercise uses the figshare copy**, which is the one the paper cites.
+
+## Limitations to keep in mind
+
+- **Beaches are not independent.** 19 beaches share city-wide weather; `glm()` standard errors understate uncertainty.
+- **Conditions shift across years.** Lake Michigan rose from a mean of 176.9 m (2016) to 177.4 m (2019), a record high, so the test year sits largely outside the training range. Exceedance also moves from 15.5% to 40.5% across the training years.
+- **qPCR, not culture.** These values are not comparable with culture-based *E. coli* thresholds such as the 235 CFU/100 mL used for Chicago swim advisories.
