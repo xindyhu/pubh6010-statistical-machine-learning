@@ -136,13 +136,22 @@ pc$rotation[, 1:2]
 > **Q3.** Give each of PC1 and PC2 a substantive name based on which POPs load
 > on it. What does a person with a high PC1 score look like? A high PC2 score?
 
-PC1 could be named non-dioxin like PCB because the non-dioxin like PCB POPs have a stronger
+Original Answer: PC1 could be named non-dioxin like PCB because the non-dioxin like PCB POPs have a stronger
 influence on PC1 compared to the other variables. A person with a high PC1 score would likely
 have higher levels of non-dioxin like PCBs. 
 
-PC2 could be named dioxin because the dioxin POPs have the strongest influence on PC2 
+Corrected Answer: PC1 could be named overall POPs because the loading scores across the 
+POPs are all relatively similar. If a person has a high PC1 score, they have low POPs concentrations overall. 
+
+Original Answer: PC2 could be named dioxin because the dioxin POPs have the strongest influence on PC2 
 compared to the other variables. A person with a high PC2 score likely has high levels of 
 dioxin, followed by furan. 
+
+Corrected Answer: PC2 could be named a dioxin/furan contrast because the dioxin/furan POPs 
+have positive loadings, while the other PCBshave negative loadings. PC2 is more distinguishable, 
+and clearly separates the PCBS from the dioxin and furan POPs. A person with a high PC2 score likely 
+has high levels of dioxin and furan.  
+
 
 5. Make a **biplot** of PC1 vs PC2.
 ```{r}
@@ -206,6 +215,29 @@ agreed, as one can see on the dendrogram two clear clusters as well. The first c
 indicates an overall burden and the second cluster for PC2 indicates a dioxin/furan contrast. 
 
 
+```{r}
+# k means on just the original POPs, not on the PCs, so that cluster mean will help you to interpret the clusters
+
+# using silhouette to find optimal number of clusters
+avg_sil <- function(k){
+  km <- kmeans(x = Xs, centers = k, nstart = 25)
+  sil <- silhouette(km$cluster, dist(Xs))
+  mean(sil[, 3])
+}
+k_vals <- 2:6
+avg_sil_vals <- sapply(k_vals, avg_sil)
+# k = 2 has the highest value
+
+# another way to use silhouette to find optimal number of clusters
+library(factoextra)
+fviz_nbclust(Xs, kmeans, method = "silhouette")
+
+km_2 <- kmeans(Xs, centers = 2, nstart = 25)
+print(km_2)
+
+# K-means clustering on the original (scaled) POPs give similar results (2 clusters)
+
+```
 
 ## Part D — Interpretation
 
