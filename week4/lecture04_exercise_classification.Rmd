@@ -1,7 +1,7 @@
 ---
 title: "Lecture 04 Exercise — Replicating a published beach-water classifier"
 subtitle: "PubH 6010 Independent Study · KNN, logistic regression & model evaluation"
-author: "Your name:"
+author: "Your name: Katie O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -48,42 +48,437 @@ Follow the authors' own preprocessing (their notebook is in `github.com/aliielah
 6. Report n and the percentage of negative samples for each split, and compare with **Table 1** of the paper.
 7. Report the missingness of each feature in the training years, then follow their preprocessing: impute missing values with a draw from the feature's **training** mean and SD ("noisy average"), then **min-max scale** using training minima and maxima.
 
+```{r}
+# set up
+library(readr); library(dplyr); library(tidyr); library(ggplot2); library(purrr); library(class); library(lubridate)
+
+# keeping years 2016 to 2019
+chi <- read_csv("Data-CHI.csv", show_col_types = FALSE) |>
+  filter(year >= 2016, year <= 2019) |>
+  # recomputing day of year and tide
+  mutate(doy      = as.integer(format(date, "%j")),
+         tide_gtm = as.integer(tide > mean(tide, na.rm = TRUE)),
+         # defining exceedance 
+         exceed   = as.integer(ENT > 320))
+
+# using these 12 features
+feats <- c("tide", "tide_gtm", "lograin3T", "wet3", "lograin7T", "wet7",
+           "WVHT", "Wtemp_B", "rad", "awind", "owind", "doy")
+
+# splits data into train (2016-2018) and test (2019)
+train <- filter(chi, year <= 2018)
+test  <- filter(chi, year == 2019)
+
+# number of negative samples in train data
+100-((sum(train$exceed)/4404)*100)
+# number of negative samples in test data
+100-((sum(test$exceed)/1900)*100)
+
+# exceedance rate by year
+train %>%
+  group_by(year = year(date)) %>%
+  summarize(total = n(), 
+            exceedance = sum(exceed), 
+            exceedance_rate = (exceedance/total)*100)
+test %>%
+  summarize(year = 2019, 
+            total = n(), 
+            exceedance = sum(exceed), 
+            exceedance_rate = (exceedance/total)*100)
+
+# Missingness in the training years
+train |> select(all_of(feats)) |>
+  summarise(across(everything(), ~ mean(is.na(.x)))) |>
+  pivot_longer(everything(), names_to = "feature", values_to = "prop_missing") |>
+  arrange(desc(prop_missing))
+
+# Their preprocessing: noisy-average imputation, then min-max scaling, TRAINING stats only
+set.seed(2026)
+# calculates mean, sd, max, and min for all features
+stats <- train |> select(all_of(feats)) |>
+  summarise(across(everything(), list(m = ~mean(.x, na.rm = TRUE), s = ~sd(.x, na.rm = TRUE),
+                                      lo = ~min(.x, na.rm = TRUE), hi = ~max(.x, na.rm = TRUE))))
+# imputing missing data
+impute_scale <- function(df) {
+  out <- df |> select(all_of(feats))
+  for (v in feats) {
+    x <- out[[v]]; na <- is.na(x)
+    if (any(na)) x[na] <- rnorm(sum(na), stats[[paste0(v, "_m")]], stats[[paste0(v, "_s")]])
+    out[[v]] <- (x - stats[[paste0(v, "_lo")]]) /
+                (stats[[paste0(v, "_hi")]] - stats[[paste0(v, "_lo")]])
+  }
+  as.data.frame(out)
+}
+
+# imputed data
+X_train <- impute_scale(train); X_test <- impute_scale(test)
+# needed to change X_test <- impute_scale(train) to X_test <- impute_scale(test)
+y_train <- train$exceed;        y_test <- test$exceed
+
+
+
+
+```
+
+
+
 > **Q1.** Do your numbers match Table 1? Why does the paper split by year instead of at random, and how does it tune hyperparameters with no validation set? Look at the exceedance rate by year — what does that variation imply for a model trained on 2016–18 and used in 2019?
+
+There are 4,404 observations in the training data and the number of negative samples matches (68.143%).
+There are 1,900 observations in the test data and the number of negative samples matches (79.157%).
+The paper splits the data by year because it is longitudinal data. When working with longitudinal data, 
+you should use historical data for training and more recent data for testing. There are a higher proportion
+of negative samples in the more recent data (2019), indicating that presence of ENT has decreased
+over the years. The exceedance rates were 15.5% in 2016, 28.8% in 2017, 40.5% in 2018, and 20.8% in 2019. 
+This variation implies that the model will be trained on a range of data, and should be accurate for the test year.
 
 ## Part B — KNN, tuned their way
 
 8. Choose K by **4-fold cross-validation inside the training years** (the paper's approach), scoring by AUC. Try K = 1, 5, 15, 25, 50, 100, 200, and report cross-validated AUC and sensitivity for each.
 
+```{r}
+# metrics used in the paper
+metrics <- function(y, yhat) {
+  tp <- sum(yhat == 1 & y == 1); fn <- sum(yhat == 0 & y == 1)
+  fp <- sum(yhat == 1 & y == 0); tn <- sum(yhat == 0 & y == 0)
+  sens <- tp / (tp + fn); spec <- tn / (tn + fp)
+  ppv  <- ifelse(tp + fp > 0, tp / (tp + fp), NA); npv <- ifelse(tn + fn > 0, tn / (tn + fn), NA)
+  pf1  <- 2 * ppv * sens / (ppv + sens); nf1 <- 2 * npv * spec / (npv + spec)
+  w    <- c(sum(y == 1), sum(y == 0)) / length(y)
+  round(c(sens = sens, spec = spec, PPV = ppv, NPV = npv, WF1 = w[1] * pf1 + w[2] * nf1), 3)
+}
+auc <- function(p, y) { r <- rank(p); n1 <- sum(y); n0 <- sum(1 - y)
+  (sum(r[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0) }
+
+# function for KNN
+knn_p1 <- function(Xfit, yfit, Xnew, k) {
+  set.seed(2026)
+  # KNN calculation
+  f <- knn(Xfit, Xnew, cl = factor(yfit, levels = 0:1), k = k, prob = TRUE)
+  # classification
+  ifelse(f == "1", attr(f, "prob"), 1 - attr(f, "prob"))  
+}
+
+# 4-fold CV inside the training years
+set.seed(2026)
+fold <- sample(rep(1:4, length.out = nrow(X_train)))
+# for each K: for each fold f, fit on fold != f, score on fold == f, average the AUCs
+
+# k values
+k_values <- c(1, 5, 15, 25, 50, 100, 200)
+
+# outer loop over K values, inner evaluation over 4 folds
+cv_results <- do.call(rbind, lapply(k_values, function(k_curr) {
+  
+  # folding
+  fold_metrics <- sapply(1:4, function(f) {
+    # training data
+    X_fit <- X_train[fold != f, , drop = FALSE]
+    y_fit <- y_train[fold != f]
+    
+    X_val <- X_train[fold == f, , drop = FALSE]
+    y_val <- y_train[fold == f]
+    
+    # KNN calculations
+    p1_hat <- knn_p1(Xfit = X_fit, yfit = y_fit, Xnew = X_val, k = k_curr)
+    y_hat  <- ifelse(p1_hat >= 0.5, 1, 0)
+    
+    # calculating AUC
+    auc_score <- auc(p = p1_hat, y = y_val)
+    m_scores  <- metrics(y = y_val, yhat = y_hat)
+    
+    c(AUC = auc_score, m_scores)
+  })
+  
+  # averaging the scores across the folds
+  mean_scores <- rowMeans(fold_metrics, na.rm = TRUE)
+  
+  # metrics
+  data.frame(
+    K    = k_curr,
+    AUC  = round(mean_scores["AUC"], 3),
+    sens = round(mean_scores["sens"], 3),
+    spec = round(mean_scores["spec"], 3),
+    PPV  = round(mean_scores["PPV"], 3),
+    NPV  = round(mean_scores["NPV"], 3),
+    WF1  = round(mean_scores["WF1"], 3)
+  )
+}))
+
+print(cv_results)
+
+
+```
+
+
 > **Q2.** How do AUC and sensitivity behave as K grows, and why do they behave differently? Relate this to the bias–variance trade-off (slide 12) and to class imbalance (slide 37).
+
+Generally, as K grows, AUC increases and then decreases, peaking at K = 15 with AUC = 0.68. Sensitivity decreases
+as K increases. They behave differently because AUC is related to prediction across every cutoff while 
+sensitivity evaluates one decision threshold at a time. How AUC and sensitivity behave is also related 
+to the bias-variance trade-off, which is that when K increases, variance decreases but there is high bias. 
+Additionally, when class imbalance is present, increasing K causes the majority observations (in this case, 
+negative samples), to dominate, which leads to error rate being a poor summary measure. 
 
 ## Part C — Logistic regression
 
 9. Fit a logistic regression on the training years with the same 12 features and report odds ratios with 95% CIs, sorted by p-value.
+```{r}
+# logistic regression model
+fit <- glm(exceed ~ ., family = binomial(), data = bind_cols(X_train, exceed = y_train))
+p_logit <- predict(fit, newdata = X_test, type = "response")
+
+# calibration
+tibble(p = p_logit, y = y_test) |> mutate(bin = ntile(p, 10)) |> group_by(bin) |>
+  summarise(mean_pred = mean(p), observed = mean(y)) |>
+  ggplot(aes(mean_pred, observed)) + geom_abline(linetype = 2) + geom_point() +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) + theme_bw()
+
+# odds Ratios and 95% CIs, sorted by p-value
+library(broom)
+lr_results <- tidy(fit, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  select(term, OR = estimate, CI_lower = conf.low, CI_upper = conf.high, p_value = p.value) |>
+  mutate(sig = ifelse(p_value < 0.05, "*", "")) |>
+  arrange(p_value)
+print(lr_results)
+```
+
 
 > **Q3.** Which features carry signal? Is rainfall among them, and does that match your expectation? The paper reports that wind and tide dominate its Chicago feature importance — do you see the same? (Because the features are min-max scaled, each OR compares the top of the training range with the bottom, so they are comparable across features.)
+
+Significant predictors are tide, alongshore wind speed, offshore wind speed, and day of year. This is similar to 
+what the paper finds. Rainfall is not among the significant predictors, which is not what I would have expected.
+This aligns with the papers findings that wind and tide dominate feature importance. 
+
 
 ## Part D — Evaluate on 2019
 
 10. Predict for 2019 with both models. Report **sensitivity, specificity, PPV, NPV, weighted F1 and AUC** — the paper's metrics. Put their Chicago-to-Chicago logistic and random-forest rows from **Table 4** in the same table for comparison.
 11. Compare the **mean predicted probability** with the observed exceedance rate, and plot a **calibration curve** using decile bins.
 
+```{r}
+# predicting with KNN using k = 15 (highest AUC)
+predict_knn <- knn_p1(Xfit = X_train, yfit = y_train, Xnew = X_test, k = 15)
+
+# predicting with logistic regression
+fit <- glm(exceed ~ ., family = binomial(), data = bind_cols(X_train, exceed = y_train))
+p_logit <- predict(fit, newdata = X_test, type = "response")
+
+# classifications at 0.5 threshold
+yhat_logit <- ifelse(p_logit >= 0.5, 1, 0)
+yhat_knn   <- ifelse(predict_knn >= 0.5, 1, 0)
+
+# metrics
+m_logit <- c(metrics(y = y_test, yhat = yhat_logit), AUC = round(auc(p = p_logit, y = y_test), 3))
+m_knn   <- c(metrics(y = y_test, yhat = yhat_knn),   AUC = round(auc(p = predict_knn, y = y_test), 3))
+
+# table 4 comparison 
+table4_comparison <- tibble(
+  Model = c(
+    "KNN", 
+    "Logistic Regression", 
+    "Paper Logistic Regression", 
+    "Paper Random Forest"
+  ),
+  Sensitivity = c(m_knn["sens"], m_logit["sens"], 0.220, 0.256),
+  Specificity = c(m_knn["spec"], m_logit["spec"], 0.966, 0.856),
+  PPV         = c(m_knn["PPV"],  m_logit["PPV"],  0.990, 0.710),
+  NPV         = c(m_knn["NPV"],  m_logit["NPV"],  0.072, 0.454),
+  `Weighted F1` = c(m_knn["WF1"],m_logit["WF1"],  0.535, 0.482),
+  AUC         = c(m_knn["AUC"],  m_logit["AUC"],  0.693, 0.607)
+)
+print(table4_comparison)
+
+
+# observed exceedance rate
+mean(y_test)
+# mean predicted probability using logistic regression
+mean(p_logit)
+# mean predicted probability using KNN
+mean(predict_knn)
+
+# decile calibration plot
+cal_data <- tibble(
+  y = rep(y_test, 2),
+  p = c(p_logit, predict_knn),
+  Model = factor(rep(c("Logistic Regression", paste0("KNN")), each = length(y_test)))
+) |>
+  group_by(Model) |>
+  mutate(bin = ntile(p, 10)) |>
+  group_by(Model, bin) |>
+  summarise(
+    mean_pred = mean(p),
+    observed  = mean(y),
+    .groups   = "drop"
+  )
+
+ggplot(cal_data, aes(x = mean_pred, y = observed, color = Model, shape = Model)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(
+    title = "2019 Calibration Plot across Deciles",
+    x = "Mean Predicted Probability",
+    y = "Observed Exceedance Rate",
+    color = "Model",
+    shape = "Model"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+```
+
+
 > **Q4.** How close is your AUC to theirs? Now compare operating points: at a 0.5 cutoff, how many days does your model flag, and how many does theirs? What does it mean that two models can share an AUC and behave so differently?
+
+The AUC from the KNN model is 0.563 and the AUC model from the logistic regression model is 0.694. The KNN AUC is a bit 
+lower than the paper (0.607). The AUC from the logistic model is essentially the same as the paper (0.693). 
+With the KNN model, the sensitivity is 0.578, compared to 0.256 in the paper. For logistic regression, the sensitivity
+is 0.992, compared to 0.22 in the paper. The mean predicted probability is 0.68 with the KNN model and 0.54 with the 
+logistic regression model, compared to the 0.21 exceedance rate in the data. Because AUC is a metric used to measure 
+overall relative ranking, it is possible that two models can have similar AUCs but behave differently. 
+
 
 > **Q5.** What does the calibration plot show that AUC cannot? Why does the paper never report it?
 
+The calibration plot shows accuracy, in this case that the mean predicted probability has a much wider range with the KNN model 
+compared to the logistic regression model. In contrast, the KNN model has a smaller range for observed expected
+rate compared to the logistic regression model. The paper does not report this because accuracy is not one of the 
+standard metrics used. 
+
 12. **Diagnose the over-prediction.** Compare the range of `tide` in the training years with its range in 2019 — and look at the *scaled* test values, remembering that min-max scaling puts training data in [0, 1]. Then refit without `tide` and `tide_gtm` and compare AUC, mean predicted probability, sensitivity and specificity.
 
+```{r}
+# comparing ranges
+max(train$tide) - min(train$tide)
+# range of tide in training years: 0.55
+max(test$tide) - min(test$tide)
+# range of tide in test years: 0.48
+
+max(X_train$tide) - min(X_train$tide)
+# range of tide in the scaled training years: 1
+max(X_test$tide) - min(X_test$tide)
+# range of tide in the scaled test years: 0.86
+
+
+# refitting without tide and tide_gtm
+X_train_no_tide <- X_train %>% select(-tide, -tide_gtm)
+X_test_no_tide <- X_test %>% select(-tide, -tide_gtm)
+
+# logistic regression
+fit_no_tide <- glm(exceed ~ ., family = binomial(), data = bind_cols(X_train_no_tide, exceed = y_train))
+p_logit_no_tide <- predict(fit_no_tide, newdata = X_test_no_tide, type = "response")
+
+# KNN
+predict_knn_no_tide <- knn_p1(Xfit = X_train_no_tide, yfit = y_train, Xnew = X_test_no_tide, k = 15)
+
+# classifications at 0.5 threshold
+yhat_logit_no_tide <- ifelse(p_logit_no_tide >= 0.5, 1, 0)
+yhat_knn_no_tide   <- ifelse(predict_knn_no_tide >= 0.5, 1, 0)
+
+# compute test metrics using existing 
+m_logit_no_tide <- c(metrics(y = y_test, yhat = yhat_logit_no_tide), AUC = round(auc(p = p_logit_no_tide, y = y_test), 3))
+m_knn_no_tide   <- c(metrics(y = y_test, yhat = yhat_knn_no_tide),   AUC = round(auc(p = predict_knn_no_tide, y = y_test), 3))
+
+# table 4 comparison 
+new_models <- tibble(
+  Model = c(
+    "KNN", 
+    "Logistic Regression" 
+  ),
+  Sensitivity = c(m_knn_no_tide["sens"], m_logit_no_tide["sens"]),
+  Specificity = c(m_knn_no_tide["spec"], m_logit_no_tide["spec"]),
+  AUC         = c(m_knn_no_tide["AUC"],  m_logit_no_tide["AUC"]), 
+  `Mean predicted probability` = c(
+    mean(predict_knn_no_tide), 
+    mean(p_logit_no_tide)
+))
+
+print(new_models)
+
+
+```
+When removing tide and tide_gtm from the KNN model, sensitivity decreases, specificity increases, AUC stays 
+about the same, and mean predicted probability decreases. For the logistic regression model, sensitivity decreases, 
+specificity increases, AUC decreases slightly, and mean predicted probability decreases. 
+
 > **Q6.** What is wrong with lake level as a predictor here? (Look up Lake Michigan levels in 2019.) What happens to AUC when you drop it, and what happens to the probabilities? If AUC alone selects models, which model wins — and is that the one you would deploy?
+
+The issue with lake level as a predictor is that certain years can be unusually high, leading to annual inconsistency. In 2019, 
+Lake Michigan had unusually high water levels. When lake level (tide and tide_gtm) are dropped from the model, AUC decreases, 
+and the predicted probability also decreases. The predicted probabilities become closer to the observed exceedance rate. In this
+case, tide may be an extrapolating predictor, and the model may be better without it. 
 
 ## Part E — Thresholds
 
 13. Using the model **without** the lake-level terms, compare thresholds: 0.5, the training prevalence, and the value that gives 85% specificity.
 
+```{r}
+# classifications at 0.5 threshold
+yhat_logit_no_tide <- ifelse(p_logit_no_tide >= 0.5, 1, 0)
+yhat_knn_no_tide   <- ifelse(predict_knn_no_tide >= 0.5, 1, 0)
+# test metrics
+m_logit_no_tide <- c(metrics(y = y_test, yhat = yhat_logit_no_tide), AUC = round(auc(p = p_logit_no_tide, y = y_test), 3))
+m_knn_no_tide   <- c(metrics(y = y_test, yhat = yhat_knn_no_tide),   AUC = round(auc(p = predict_knn_no_tide, y = y_test), 3))
+
+# classifications at training prevalence threshold (0.269)
+yhat_logit_no_tide_tp <- ifelse(p_logit_no_tide >= 0.269, 1, 0)
+yhat_knn_no_tide_tp   <- ifelse(predict_knn_no_tide >= 0.269, 1, 0)
+# test metrics
+m_logit_no_tide_tp <- c(metrics(y = y_test, yhat = yhat_logit_no_tide_tp), AUC = round(auc(p = p_logit_no_tide, y = y_test), 3))
+m_knn_no_tide_tp   <- c(metrics(y = y_test, yhat = yhat_knn_no_tide_tp),   AUC = round(auc(p = predict_knn_no_tide, y = y_test), 3))
+
+# classifications at value that gives 85% specificity
+yhat_logit_no_tide_sen <- ifelse(p_logit_no_tide >= 0.54, 1, 0)
+yhat_knn_no_tide_sen   <- ifelse(predict_knn_no_tide >= 0.54, 1, 0)
+# test metrics
+m_logit_no_tide_sen <- c(metrics(y = y_test, yhat = yhat_logit_no_tide_sen), AUC = round(auc(p = p_logit_no_tide, y = y_test), 3))
+m_knn_no_tide_sen   <- c(metrics(y = y_test, yhat = yhat_knn_no_tide_sen),   AUC = round(auc(p = predict_knn_no_tide, y = y_test), 3))
+
+# table 4 comparison 
+threshold_comparison <- tibble(
+  Model = c(
+    "KNN - 0.5 Threshold", 
+    "Logistic Regression - 0.5 Threshold", 
+    "KNN - Training Prevalence Threshold", 
+    "Logistic Regression - Training Prevalence Threshold", 
+    "KNN - 85% Sensitivity Threshold", 
+    "Logistic Regression - 85% Sensitivity Threshold"
+  ),
+  Sensitivity = c(m_knn_no_tide["sens"], m_logit_no_tide["sens"], m_knn_no_tide_tp["sens"], 
+                  m_logit_no_tide_tp["sens"], m_knn_no_tide_sen["sens"], m_logit_no_tide_sen["sens"]),
+  Specificity = c(m_knn_no_tide["spec"], m_logit_no_tide["spec"], m_knn_no_tide_tp["spec"], 
+                  m_logit_no_tide_tp["spec"], m_knn_no_tide_sen["spec"], m_logit_no_tide_sen["spec"]),
+  AUC         = c(m_knn_no_tide["AUC"],  m_logit_no_tide["AUC"], m_knn_no_tide_tp["AUC"], 
+                  m_logit_no_tide_tp["AUC"], m_knn_no_tide_sen["AUC"], m_logit_no_tide_sen["AUC"]), 
+  `Mean predicted probability` = c(
+    mean(predict_knn_no_tide), 
+    mean(p_logit_no_tide), 
+    mean(predict_knn_no_tide), 
+    mean(p_logit_no_tide), 
+    mean(predict_knn_no_tide), 
+    mean(p_logit_no_tide)
+))
+
+print(threshold_comparison)
+```
+
 > **Q7.** The USGS target quoted in the paper is sensitivity 0.50 with specificity 0.85. Do you reach it? Do any of the models in their Table 4? Which threshold would you recommend to the Chicago Park District, and what value judgment does that rest on? One catch: with no validation set, you had to read that threshold off the test year — the same thing slide 41 does. Why is that optimistic, and what would you do instead?
+
+It was difficult to reach 85% specificity exactly. Varying the threshold value even by 0.01 changed the specificity drastically.
+The Chicago:Chicago random forest model in the paper reached 85.6% sensitivity. In some cases, 85% specificity is surpassed. 
+I would recommend using the threshold of 0.5 because of the balance it provides between specificity and sensitivity. Using the threshold
+off of the test year is optimistic because that test year may be an outlier or inconsistent with other years. Instead, a defined threshold
+that is based off of public health significance is better. 
 
 ## Part F — Read against the paper
 
 > **Q8.** Write a short critique (half a page). Useful angles: their feature set was fixed by what Chicago and San Diego have in common rather than by what predicts enterococci in Chicago; wave height is more than half missing in the training years and is imputed from its own mean and SD; `tide_gtm` is defined using the mean of the whole series, including the test year; and their Table 4 reports PPV 0.990 alongside sensitivity 0.220 for the Chicago logistic model, which is hard to reconcile with 20.8% prevalence. Also: can any of this establish that rainfall *causes* exceedances? What design would?
+
+The two model approaches reach similar conclusions, and generally have high specificity and low sensitivity. It is unclear why the sensitivity remains low in many of the models, both the ones created here and the ones in the paper, since the observed exceedance rate is not that low at 21%. 
+Additionally, the approach of using san diego to predict chicao and give versa is interesting, given that these two environments vary dramatically, and important predictors in one location may not be important in the other location. 
 
 *Optional:* fit a three-class model (below half-BAV, half-BAV to BAV, above BAV) with `nnet::multinom()` and see which classes it ever predicts (slides 24–31).
 
