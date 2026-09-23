@@ -1,0 +1,143 @@
+---
+title: "Lecture 05 Exercise — Checking a published LDA paper"
+subtitle: "PubH 6010 Independent Study · LDA, QDA & naive Bayes"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Why this exercise
+
+Lecture 05 introduces a different route to P(Y = g | X = x). Logistic regression and KNN model that probability **directly**. LDA, QDA and naive Bayes model how the predictors are distributed **within each class**, f_g(x), and then use Bayes' theorem with the class priors π_g to get the posterior (slides 5–7). The three methods differ only in what they assume about f_g(x).
+
+This week's paper is **not** environmental health. It is a clinical diagnostic study, chosen because it names LDA in its title and uses a public dataset, so you can put your own LDA next to the paper's. The skill that carries over to your project is checking a methods section against the method: does the paper do what it says LDA does, and can its numbers support its conclusions? This is practice for the article critique due in December.
+
+# The paper and the data
+
+> Adebiyi MO, Arowolo MO, Mshelia MD, Olugbara OO.
+> **Linear discriminant analysis classification model for breast cancer diagnosis.**
+> *Applied Sciences.* 2022;12(22):11455. doi:10.3390/app122211455 (open access)
+
+Read the **Abstract**, **Materials and Methods** (especially the paragraphs on feature scaling and LDA), **Table 1** and the captions of **Figures 2–5** (the confusion matrices).
+
+`wdbc.csv` is the Wisconsin Diagnostic Breast Cancer dataset (Street, Wolberg & Mangasarian 1993), the Kaggle file the paper cites, with column names cleaned (see `data_dictionary.Rmd`). Each row is one fine-needle aspirate (FNA) of a breast mass. Each column summarizes the cell nuclei in a digitized image of that aspirate.
+
+**Outcome:** `diagnosis`, B (benign) or M (malignant). Treat **malignant as the positive class** throughout.
+
+# Your tasks
+
+Use **tidyverse** (`readr`, `dplyr`, `tidyr`, `ggplot2`, `purrr`), `MASS` for `lda()` and `qda()`, and `e1071` for `naiveBayes()` (and `svm()`, provided). Load MASS with `library(MASS, exclude = "select")` so it doesn't mask `dplyr::select()`. Submit your knitted `.Rmd` with written answers to the questions in **bold**.
+
+## Part A — The data and the priors
+
+1. Read `wdbc.csv`, make `diagnosis` a factor with levels `c("B", "M")`, and report the class counts and proportions.
+2. Look at the correlations among `radius_mean`, `perimeter_mean`, `area_mean` and `radius_worst`.
+
+> **Q1.** What is π̂_M? Slide 7 says the sample proportion estimates π_g *if we have a random sample*. Where do these 569 aspirates come from, and would π̂_M carry over to other clinics or to screening? Why should radius, perimeter and area be so highly correlated, and which of this week's three methods will that hurt most?
+
+## Part B — The paper's pipeline
+
+The paper uses an 80/20 split, "feature scaling", LDA "feature extraction", then a random forest or SVM. It reports no seed and no cross-validation.
+
+3. Split 80/20 with `set.seed(2026)`. Standardize every feature using the **training** mean and SD.
+4. Fit `lda()` on all 30 features. How many discriminant directions (columns of `$scaling`) do you get? List the LD1 coefficients sorted by absolute size.
+5. Refit on the **unstandardized** training data and compare the test-set posterior probabilities with those from the standardized fit.
+
+> **Q2.** How many discriminant directions can LDA produce with G classes (compare slide 19, where G = 3)? The paper says LDA "dropped ten (10) least important columns". Is that something LDA does? Could sorting |LD1| coefficients be a sensible way to rank features here? Look at which features top the list, and at their signs. Did "feature scaling" change your LDA at all? For which methods in this course *does* scaling matter?
+
+## Part C — LDA, QDA, naive Bayes and logistic regression
+
+6. On the same split, fit `qda()`, `naiveBayes()` and `glm(..., family = binomial())` with all 30 features, plus the provided `svm()`. For each, report correct/114, accuracy, sensitivity and specificity **for malignant**, and the confusion counts.
+7. Count the parameters each of LDA, QDA and naive Bayes estimates (slide 24's formulas), and compare with the number of malignant cases in the training set.
+8. Read the warnings from `glm()` and look at its coefficient table.
+9. For each model, what share of the test posteriors are below 0.001 or above 0.999?
+
+> **Q3.** Can this single test set of 114 cases tell the methods apart? Is QDA's covariance estimate trustworthy with this many parameters per malignant case? What happened to logistic regression, and which reason on slide 5 does it illustrate? How would you fix it without switching to LDA?
+
+> **Q4.** Naive Bayes assumes the predictors are independent **within each class** (slide 27). How badly do these data violate that? It still classifies well, so where does the damage show up? Why might QDA's probabilities be extreme too, for a different reason?
+
+## Part D — Reading the paper's confusion matrices
+
+10. Enter the four confusion matrices from the captions of the paper's Figures 2–5 (TP, FP, FN, TN). For each, compute the number of actual positives, the number of actual negatives, accuracy, recall and specificity.
+
+> **Q5.** If all four models had been scored on the same test set, what would have to be true about the actual-positive counts? Is it? The paper never says which class is "positive". With 37% of the data malignant, about how many malignant cases should a random 114-case test set hold? So which class must the paper's "positive" be, and what does that do to the meaning of its reported sensitivity? How many patients separate the paper's 95.61% from its 96.4%, and is that a difference you would trust?
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(MASS, exclude = "select")
+library(readr); library(dplyr); library(tidyr); library(ggplot2); library(purrr); library(e1071)
+
+wdbc <- read_csv("wdbc.csv", show_col_types = FALSE) |>
+  mutate(diagnosis = factor(diagnosis, levels = c("B", "M")))
+feats <- setdiff(names(wdbc), c("id", "diagnosis"))
+
+# ---- Part B: the paper's split ----
+set.seed(2026)
+idx   <- sample(nrow(wdbc), round(0.8 * nrow(wdbc)))
+train <- wdbc[idx, ]; test <- wdbc[-idx, ]
+ctr <- map_dbl(train[feats], mean); scl <- map_dbl(train[feats], sd)
+standardize <- \(df) mutate(df, across(all_of(feats), \(v) (v - ctr[cur_column()]) / scl[cur_column()]))
+train_s <- standardize(train); test_s <- standardize(____)
+
+f_all   <- reformulate(feats, response = "diagnosis")
+lda_fit <- lda(f_all, data = train_s)
+dim(lda_fit$scaling)
+
+# ---- Part C ----
+qda_fit <- qda(f_all, data = train_s)
+nb_fit  <- naiveBayes(f_all, data = train_s)
+glm_fit <- glm(f_all, family = binomial(), data = train_s)
+svm_fit <- svm(f_all, data = train_s)              # provided: the paper's comparator
+
+probs <- tibble(
+  y     = test_s$diagnosis,
+  LDA   = predict(lda_fit, test_s)$posterior[, "M"],
+  QDA   = predict(qda_fit, test_s)$posterior[, "M"],
+  NB    = predict(nb_fit,  test_s, type = "____")[, "M"],
+  Logit = predict(glm_fit, test_s, type = "response"))
+
+# Provided: metrics with malignant as the positive class
+metrics_m <- function(y, yhat_M) {
+  pos <- y == "M"
+  tibble(correct = sum(yhat_M == pos), accuracy = mean(yhat_M == pos),
+         sens_M = sum(yhat_M & pos) / sum(pos), spec_M = sum(!yhat_M & !pos) / sum(!pos),
+         TP = sum(yhat_M & pos), FN = sum(!yhat_M & pos), FP = sum(yhat_M & !pos), TN = sum(!yhat_M & !pos))
+}
+probs |> pivot_longer(-y, names_to = "model", values_to = "p") |>
+  group_by(model) |> group_modify(\(d, k) metrics_m(d$y, d$p > 0.5))
+
+# ---- Part D: the paper's confusion matrices (Figures 2-5) ----
+paper <- tribble(
+  ~model,            ~TP, ~FP, ~FN, ~TN,
+  "RF with LDA",      65,   2,   3,  44,
+  "RF without LDA",   ____, ____, ____, ____,
+  "SVM with LDA",     ____, ____, ____, ____,
+  "SVM without LDA",  ____, ____, ____, ____)
+```
+
+# What "good" looks like
+
+A correct submission:
+
+1. questions whether π̂_M = 0.373 describes any population the model would be used in;
+2. shows that two-class LDA yields one direction and that scaling does not change it, and so that the paper's description of its LDA step cannot be right;
+3. connects each method's failure mode to its assumption: separation for logistic regression, too many covariance parameters for QDA, correlated predictors for naive Bayes;
+4. uses the confusion-matrix totals to show the paper's models were not scored on one test set and that its "positive" class is benign.
+
+Your numbers should land near:
+
+- 357 benign, 212 malignant (π̂_M = 0.373); r(radius_mean, perimeter_mean) ≈ 0.998.
+- Seed 2026 split: 455 training (174 M), 114 test (38 M). `$scaling` is 30 × 1; raw and standardized LDA posteriors agree to ~1e-14.
+- On that split, LDA, QDA and naive Bayes each get 110/114; logistic regression 111 (with convergence warnings); SVM 113.
+- Parameters: LDA 525, QDA 990, naive Bayes 120.
+- Share of posteriors beyond 0.001/0.999: LDA about half; QDA and naive Bayes about 95%; logistic about 99%.
+- The paper's four matrices have 68, 67, 69 and 66 actual positives; a random 114-case test set holds about 42 ± 5 malignant cases.
