@@ -1,0 +1,70 @@
+---
+title: "Data dictionary — wdbc.csv"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+**Source.** Wisconsin Diagnostic Breast Cancer (WDBC) data: Street WN, Wolberg WH, Mangasarian OL. *Nuclear feature extraction for breast tumor diagnosis.* IS&T/SPIE Symposium on Electronic Imaging, 1993. Distributed by the UCI Machine Learning Repository (dataset 17) and, as the file cited by Adebiyi et al. (2022), on Kaggle (`uciml/breast-cancer-wisconsin-data`, `data.csv`).
+
+**What a row is.** One fine-needle aspirate (FNA) of a breast mass from a patient at the University of Wisconsin Hospitals, Madison, collected in the late 1980s to early 1990s. The aspirate was imaged, an operator outlined the cell nuclei in the image, and software computed ten shape and texture measurements for each nucleus. The diagnosis was confirmed by later cytology or surgical biopsy.
+
+```{r peek}
+library(readr); library(dplyr)
+wdbc <- read_csv("wdbc.csv", show_col_types = FALSE)
+dim(wdbc)
+count(wdbc, diagnosis)
+anyNA(wdbc)
+```
+
+569 rows, 357 benign (62.7%) and 212 malignant (37.3%), no missing values.
+
+## Outcome
+
+| Column | Meaning |
+|---|---|
+| `diagnosis` | `B` = benign, `M` = malignant. **The outcome; treat M as the positive class.** |
+| `id` | Sample ID number. Not a predictor. |
+
+## The 30 features
+
+Ten measurements are computed for every nucleus in the image, then summarized over the nuclei in three ways, giving 3 × 10 = 30 columns:
+
+- `_mean`: the mean over all nuclei in the image
+- `_se`: the standard error of that mean
+- `_worst`: the mean of the three largest values ("worst" nuclei)
+
+| Measurement | Meaning |
+|---|---|
+| `radius` | Mean distance from the centre to points on the nuclear boundary |
+| `texture` | Standard deviation of grey-scale values inside the nucleus |
+| `perimeter` | Length of the boundary |
+| `area` | Area inside the boundary |
+| `smoothness` | Local variation in radius lengths |
+| `compactness` | perimeter² / area − 1.0 |
+| `concavity` | Severity of concave portions of the boundary |
+| `concave_points` | Number of concave portions of the boundary |
+| `symmetry` | Symmetry of the nucleus |
+| `fractal_dimension` | "Coastline approximation" − 1 |
+
+So `area_worst` is the mean area of the three largest nuclei in the image, and `concave_points_se` is the standard error of the mean number of concave points.
+
+**Built-in collinearity.** Radius, perimeter and area are geometric functions of one another (perimeter ≈ 2πr, area ≈ πr²), and `_worst` columns track `_mean` columns. Several pairwise correlations exceed 0.95.
+
+```{r corr}
+wdbc |> select(radius_mean, perimeter_mean, area_mean, radius_worst, area_worst) |> cor() |> round(3)
+```
+
+## Differences from the Kaggle file
+
+`prepare_wdbc.R` builds `wdbc.csv` from the Kaggle `data.csv` (kept in `raw/`, which is git-ignored). Two changes:
+
+1. **Trailing empty column dropped.** Every data row of the Kaggle file ends with a comma, so the header has 33 names and the rows have 32 fields. Reading it directly with `readr::read_csv()` gives parsing warnings and a spurious 33rd column. Our copy of the file also came back with 568 rows instead of 569, which is easy to miss.
+2. **Spaces in names replaced.** `concave points_mean` becomes `concave_points_mean` (and likewise for `_se` and `_worst`).
+
+The values are unchanged. All 569 rows match the copy of the UCI file distributed with scikit-learn (`sklearn/datasets/data/breast_cancer.csv`) exactly.

@@ -220,6 +220,8 @@ to the bias-variance trade-off, which is that when K increases, variance decreas
 Additionally, when class imbalance is present, increasing K causes the majority observations (in this case, 
 negative samples), to dominate, which leads to error rate being a poor summary measure. 
 
+
+
 ## Part C — Logistic regression
 
 9. Fit a logistic regression on the training years with the same 12 features and report odds ratios with 95% CIs, sorted by p-value.
