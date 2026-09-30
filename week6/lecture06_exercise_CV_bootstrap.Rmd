@@ -1,0 +1,198 @@
+---
+title: "Lecture 06 Exercise — Cross-validation and the bootstrap with tidymodels"
+subtitle: "PubH 6010 Independent Study · UCI Beijing PM2.5 data"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+This exercise redoes the Lecture 06 R examples on an air-pollution dataset, using **tidymodels** instead of caret. caret is no longer actively developed; its author (Max Kuhn) now leads tidymodels, which is the current standard for modeling in R. Every task maps to a slide, so you can follow the lecture's logic and translate the code.
+
+| caret (slides) | tidymodels |
+|---|---|
+| `train(x, y, method = "lm")` | `workflow()` + `recipe()` + `linear_reg()` |
+| (single random split, slide 7) | `initial_validation_split()` + `validation_set()` |
+| `trainControl(method = "LOOCV")` | `vfold_cv(data, v = nrow(data))` |
+| `trainControl(method = "cv", number = 10)` | `vfold_cv(data, v = 10)` |
+| `train(..., tuneGrid = ...)` | `tune_grid(workflow, resamples, grid = ...)` |
+| `$results`, `$bestTune` | `collect_metrics()`, `select_best()` |
+| `twoClassSummary` | `metric_set(roc_auc, sens, spec)` |
+| `thresholder()` | `probably::threshold_perf()` |
+| (manual bootstrap loop) | `bootstraps()` + `int_pctl()` |
+
+Install once: `install.packages(c("tidymodels", "kknn", "probably"))`. The resources at <https://www.tidymodels.org/start/> (especially "Evaluate your model with resampling" and "Tune model parameters") and the free book *Tidy Modeling with R* (<https://www.tmwr.org>, chapters 10 and 13) cover everything used here.
+
+**Data.** `beijing_pm25_2014.csv` holds daily PM2.5 and weather at the U.S. Embassy in Beijing for 2014 (360 days), built from the UCI Machine Learning Repository's *Beijing PM2.5 Data* (dataset 381). `prepare_beijing_daily.R` shows how the hourly file was turned into daily values.
+
+> Liang X, Zou T, Guo B, Li S, Zhang H, Zhang S, Huang H, Chen SX. Assessing Beijing's PM2.5 pollution: severity, weather impact, APEC and winter heating. *Proc R Soc A.* 2015;471:20150257.
+
+| Column | Meaning |
+|---|---|
+| `pm25` | Daily mean PM2.5 (µg/m³) |
+| `log_pm25` | log(`pm25`): **regression outcome** |
+| `exceed` | `Yes` if `pm25` > 75 µg/m³ (China's 24-h Grade II standard): **classification outcome** |
+| `dewp`, `temp` | Daily mean dew point and temperature (°C) |
+| `pres` | Daily mean air pressure (hPa) |
+| `wind_max` | Highest cumulated wind speed reached that day (m/s); larger = stronger, more sustained wind |
+| `rain_hours` | Hours with rain |
+| `wind_dir` | Most frequent wind direction (`NE`, `NW`, `SE`, `cv` = calm/variable) |
+| `date`, `month`, `season` | Calendar variables. **Not** used as predictors |
+
+**Predictors used throughout:** `dewp`, `temp`, `pres`, `wind_max`, `rain_hours`, `wind_dir`.
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — Look at the data and set up a workflow
+
+1. Read the data, make `wind_dir` a factor, and make `exceed` a factor with levels `c("Yes", "No")`, **in that order** (Part E explains why).
+2. Plot histograms of `pm25` and `log_pm25`, and count how many days exceed 75 µg/m³.
+3. Build a **recipe** for `log_pm25` on the six predictors with `step_dummy(wind_dir)`. Combine it with `linear_reg()` in a **workflow**.
+
+> **Q1.** Why do we model `log_pm25` rather than `pm25`? What proportion of days exceed the standard?
+
+## Part B — The validation-set approach (slides 7–9)
+
+4. After `set.seed(1)`, use `initial_validation_split(beijing, prop = c(0.5, 0.25))` to split the data **once** into training (50%), validation (25%) and testing (25%). Print the split to check the sizes.
+5. Turn the split into a resample with `validation_set()`. Then run `fit_resamples()` with `metrics = metric_set(rmse)`: this fits on the training set and scores on the validation set. Square the RMSE to get the validation MSE.
+
+The testing set is held back and is not used this week. In practice it is touched once, at the very end, to evaluate the final model (`last_fit()`).
+
+> **Q2.** What is your validation-set estimate of the test MSE? Compare it with the LOOCV and 10-fold estimates you get in Part C. Using slides 8–9, give two reasons why a single validation split can be a poor estimate of the test error of a model fit to all the data.
+
+## Part C — LOOCV and 10-fold CV for linear regression (slides 26–28, 32)
+
+6. **LOOCV.** `tune` does not accept `loo_cv()`, so use `vfold_cv(beijing, v = nrow(beijing))`. Run `fit_resamples()` with `control = control_resamples(save_pred = TRUE)`.
+7. Compute the LOOCV RMSE **two ways**: (a) `collect_metrics()`, and (b) `collect_predictions() |> rmse(truth = log_pm25, estimate = .pred)`. Square (b) to get the LOOCV MSE.
+8. Check (b) against the slide 13 shortcut, which needs only one `lm()` fit: `mean((residuals(fit) / (1 - hatvalues(fit)))^2)`.
+9. **10-fold CV:** After `set.seed(12345)`, create `vfold_cv(beijing, v = 10)`, run `fit_resamples()`, and look at `collect_metrics()`. Square the mean RMSE to get the 10-fold MSE.
+Then check how much this answer depends on the random assignment of days to folds: redo the 10-fold CV with seeds 1, 2, 3, 4 and 5 (each seed puts different days in each fold) and record the five MSEs.
+
+> **Q3.** Why do (a) and (b) in step 7 differ? (Hint: what is the RMSE of a single observation?) Which one matches the shortcut in step 8? How do the 10-fold estimates compare with LOOCV and with each other? What does the `std_err` column from `collect_metrics()` correspond to on slide 17?
+
+## Part D — Choosing K for KNN regression (slides 29–34)
+
+10. Specify `nearest_neighbor(neighbors = tune(), weight_func = "rectangular")` with `set_engine("kknn")` and `set_mode("regression")`. (`"rectangular"` gives the classic, unweighted KNN from the lecture.)
+11. Make a workflow whose recipe adds `step_normalize(all_numeric_predictors())` after `step_dummy()`.
+12. Use `tune_grid()` with `grid = tibble(neighbors = 1:20)`, once on the LOOCV folds (with `save_pred = TRUE`; compute pooled RMSE per K as in step 7b) and once on the 10-fold folds.
+13. Plot RMSE against K for both, as on slide 30, with a horizontal line at the linear regression's LOOCV RMSE. Find the best K with `select_best()`, then `finalize_workflow()` and `fit()` it on all 360 days.
+
+> **Q4.** Which K does CV choose? Why is scaling essential for KNN (look at the ranges of `pres` and `wind_max`) but irrelevant for linear regression? Which model would you use to predict PM2.5, linear regression or the best KNN, and why?
+
+## Part E — CV for classification (slides 35–39)
+
+14. Build a recipe and workflow for `exceed` with `logistic_reg()`.
+15. With 10-fold CV (`set.seed(1234)`), run `fit_resamples()` with `metrics = metric_set(accuracy, kap, roc_auc, sens, spec)` and `save_pred = TRUE`.
+16. Use `probably::threshold_perf()` on `collect_predictions()` with thresholds 0.1, 0.2, …, 0.9 and `metrics = metric_set(sens, spec, accuracy)`.
+
+> **Q5.** Report the CV accuracy, kappa, AUC, sensitivity and specificity. yardstick treats the **first** factor level as the event. What does `sens` mean with our level order? What would it mean with alphabetical order (`No`, `Yes`), as in the slide 38 example, and which argument fixes it? If this model were used to warn sensitive groups about high-pollution days, which threshold would you pick, and why?
+
+## Part F — The bootstrap (slides 41–43)
+
+17. Create `bootstraps(beijing, times = 1000)` (after `set.seed(2026)`).
+18. For each bootstrap sample (`analysis(split)`), compute a small tibble with two rows (`term`, `estimate`):
+    - the `wind_max` coefficient from `lm()`, and
+    - the 90th percentile of `pm25`.
+19. Get 95% percentile CIs with `int_pctl()`. Get bootstrap SEs by unnesting and taking the SD. Compare the coefficient's bootstrap SE with the SE from `tidy(lm(...))`.
+
+> **Q6.** Do the two SEs for the coefficient agree? Why is the bootstrap useful for the 90th percentile in particular (slide 41)?
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+
+beijing <- read_csv("beijing_pm25_2014.csv", show_col_types = FALSE) |>
+  mutate(wind_dir = factor(wind_dir),
+         exceed   = factor(exceed, levels = c(____, ____)))
+
+# Part A: recipe + workflow
+reg_rec <- recipe(log_pm25 ~ dewp + temp + pres + wind_max + rain_hours + wind_dir, data = beijing) |>
+  step_dummy(wind_dir)
+lm_wf <- workflow() |> add_recipe(reg_rec) |> add_model(linear_reg())
+
+# Part B: one validation split (training 50% / validation 25% / testing 25%)
+set.seed(1)
+beijing_split <- initial_validation_split(beijing, prop = c(0.5, 0.25))
+beijing_split
+val_set <- validation_set(____)
+fit_resamples(lm_wf, resamples = val_set, metrics = metric_set(rmse)) |>
+  collect_metrics()
+
+# Part C: LOOCV and 10-fold cv
+loo_folds <- vfold_cv(beijing, v = nrow(beijing))
+lm_loo <- fit_resamples(lm_wf, resamples = loo_folds, metrics = metric_set(rmse),
+                        control = control_resamples(save_pred = TRUE))
+collect_metrics(lm_loo)                                           # (a)
+collect_predictions(lm_loo) |> rmse(truth = log_pm25, estimate = .pred)   # (b)
+
+set.seed(12345)
+folds10 <- vfold_cv(beijing, v = 10)
+lm_10 <- fit_resamples(lm_wf, resamples = folds10, metrics = metric_set(rmse))
+collect_metrics(lm_10)
+
+# Part D: KNN, tuning K
+knn_spec <- nearest_neighbor(neighbors = tune(), weight_func = "rectangular") |>
+  set_engine("kknn") |>
+  set_mode("regression")
+knn_wf <- workflow() |>
+  add_recipe(reg_rec |> step_normalize(all_numeric_predictors())) |>
+  add_model(knn_spec)
+set.seed(12345)
+folds10 <- vfold_cv(beijing, v = 10)
+knn_10 <- tune_grid(knn_wf, resamples = folds10, grid = tibble(neighbors = 1:20),
+                    metrics = metric_set(rmse))
+collect_metrics(knn_10) |> ggplot(aes(neighbors, mean)) +
+  geom_point(col = "salmon") + geom_line(col = "salmon") + labs(y = "RMSE") + theme_bw()
+select_best(knn_10, metric = "rmse")
+
+# Part E: logistic regression
+cls_rec  <- recipe(exceed ~ dewp + temp + pres + wind_max + rain_hours + wind_dir, data = beijing) |>
+  step_dummy(wind_dir)
+logit_wf <- workflow() |> add_recipe(cls_rec) |> add_model(logistic_reg())
+set.seed(1234)
+cls_folds <- vfold_cv(beijing, v = 10)
+logit_res <- fit_resamples(logit_wf, resamples = cls_folds,
+                           metrics = metric_set(accuracy, kap, roc_auc, sens, spec),
+                           control = control_resamples(save_pred = TRUE))
+probably::threshold_perf(collect_predictions(logit_res), truth = exceed, estimate = .pred_Yes,
+                         thresholds = seq(0.1, 0.9, by = 0.1),
+                         metrics = metric_set(sens, spec, accuracy))
+
+# Part F: bootstrap
+f_reg <- log_pm25 ~ dewp + temp + pres + wind_max + rain_hours + wind_dir
+set.seed(2026)
+boots <- bootstraps(beijing, times = 1000)
+boot_stats <- boots |>
+  mutate(stats = map(splits, function(s) {
+    d <- analysis(s)
+    bind_rows(
+      tidy(lm(f_reg, data = d)) |> filter(term == "wind_max") |> select(term, estimate),
+      tibble(term = "p90", estimate = unname(quantile(d$pm25, ____)))
+    )
+  }))
+int_pctl(boot_stats, stats)
+```
+
+Runtime: about 2 minutes, most of it the LOOCV tuning of KNN (360 folds × 20 values of K).
+
+# Check your numbers
+
+- Validation-set MSE (seed 1): about 0.51 (RMSE ≈ 0.72), noticeably higher than LOOCV.
+- LOOCV for linear regression: pooled RMSE ≈ 0.619 (MSE ≈ 0.383, matching the shortcut exactly). `collect_metrics()` shows ≈ 0.50 instead.
+- KNN: 10-fold CV picks K = 7, and LOOCV is flat for K = 5–7 (RMSE ≈ 0.63). Linear regression does slightly better.
+- Logistic regression, 10-fold: accuracy ≈ 0.72, AUC ≈ 0.80.
+- Bootstrap SE of the `wind_max` coefficient ≈ 0.00066 vs `lm()` SE ≈ 0.00060. The 90th percentile of PM2.5 ≈ 197 µg/m³, 95% CI ≈ 168–245.
