@@ -182,4 +182,4 @@ pls_wf <- workflow() |>
 - Analytic sample: 1,003. PC1 explains about 63% of the POP variance; PC1–PC3 about 80%.
 - Part B, PC1 (Table 1 model): β ≈ −0.012 (95% CI about −0.018 to −0.005); PC2 p ≈ 0.87, PC3 p ≈ 0.76.
 - Part C: the intercept-only CV RMSE is about 0.232, and the best PCR is about 0.217.
-- Runtime: under a minute.
+
