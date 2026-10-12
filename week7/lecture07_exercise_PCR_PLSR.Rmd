@@ -71,8 +71,6 @@ The free book *Tidy Modeling with R* (<https://www.tmwr.org>) covers `step_pca()
 
 The 18 POPs are lipid-adjusted serum concentrations. They are log-transformed before any analysis.
 
-**Correction to the Week 3 data dictionary:** `LBXPCBLA` is PCB 126 and `LBXHXCLA` is PCB 169 (NHANES codebook; also how the authors label them). The Week 3 dictionary listed them as PCB 169 and PCB 156.
-
 Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
 
 # Tasks
