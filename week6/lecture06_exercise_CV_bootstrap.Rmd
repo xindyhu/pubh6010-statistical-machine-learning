@@ -1,7 +1,7 @@
 ---
 title: "Lecture 06 Exercise — Cross-validation and the bootstrap with tidymodels"
 subtitle: "PubH 6010 Independent Study · UCI Beijing PM2.5 data"
-author: "Your name:"
+author: "Your name: Katie O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -59,8 +59,44 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 1. Read the data, make `wind_dir` a factor, and make `exceed` a factor with levels `c("Yes", "No")`, **in that order** (Part E explains why).
 2. Plot histograms of `pm25` and `log_pm25`, and count how many days exceed 75 µg/m³.
 3. Build a **recipe** for `log_pm25` on the six predictors with `step_dummy(wind_dir)`. Combine it with `linear_reg()` in a **workflow**.
+```{r}
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+
+beijing <- read_csv("beijing_pm25_2014.csv", show_col_types = FALSE) |>
+  mutate(wind_dir = factor(wind_dir),
+         exceed   = factor(exceed, levels = c("Yes", "No")))
+
+(exceed_summary <- beijing %>%
+  group_by(exceed) %>%
+  summarize(count = n()) %>%
+  mutate(proportion = count / sum(count)) %>%
+  ungroup())
+
+ggplot(beijing, aes(x = pm25)) +
+  geom_histogram(binwidth = 20, color = "black", fill = "lightblue") +
+  labs(title = "Histogram of PM 2.5", x = "PM 2.5", y = "Frequency") +
+  theme_minimal()
+
+ggplot(beijing, aes(x = log_pm25)) +
+  geom_histogram(binwidth = 0.5, color = "black", fill = "orchid") +
+  labs(title = "Histogram of Log-transformed PM 2.5", x = "Log-transformed PM 2.5", y = "Frequency") +
+  theme_minimal()
+
+
+# Part A: recipe + workflow
+reg_rec <- recipe(log_pm25 ~ dewp + temp + pres + wind_max + rain_hours + wind_dir, data = beijing) |>
+  step_dummy(wind_dir)
+lm_wf <- workflow() |> add_recipe(reg_rec) |> add_model(linear_reg())
+
+```
+
+
 
 > **Q1.** Why do we model `log_pm25` rather than `pm25`? What proportion of days exceed the standard?
+
+We model PM 2.5 log-transformed because it is normally distributed. The original distribution of PM 2.5 is right skewed. The proportion of days exceeding the standard is 0.51. 
 
 ## Part B — The validation-set approach (slides 7–9)
 
@@ -69,7 +105,24 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 
 The testing set is held back and is not used this week. In practice it is touched once, at the very end, to evaluate the final model (`last_fit()`).
 
+```{r}
+# Part B: one validation split (training 50% / validation 25% / testing 25%)
+set.seed(1)
+beijing_split <- initial_validation_split(beijing, prop = c(0.5, 0.25))
+beijing_split
+
+# turnng the split into a resample
+val_set <- validation_set(beijing_split)
+
+# this fits on the training set and scores on the validation set
+fit_resamples(lm_wf, resamples = val_set, metrics = metric_set(rmse)) |>
+  collect_metrics()
+```
+
+
 > **Q2.** What is your validation-set estimate of the test MSE? Compare it with the LOOCV and 10-fold estimates you get in Part C. Using slides 8–9, give two reasons why a single validation split can be a poor estimate of the test error of a model fit to all the data.
+
+The validation-set estimate of the MSE is 0.717^2 = 0.51. A single validation split can be a poor estimate of the test error of a model because it can vary substantially, and by running the model only once, you are likely to get a biased estimate. 
 
 ## Part C — LOOCV and 10-fold CV for linear regression (slides 26–28, 32)
 
@@ -79,7 +132,41 @@ The testing set is held back and is not used this week. In practice it is touche
 9. **10-fold CV:** After `set.seed(12345)`, create `vfold_cv(beijing, v = 10)`, run `fit_resamples()`, and look at `collect_metrics()`. Square the mean RMSE to get the 10-fold MSE.
 Then check how much this answer depends on the random assignment of days to folds: redo the 10-fold CV with seeds 1, 2, 3, 4 and 5 (each seed puts different days in each fold) and record the five MSEs.
 
+```{r}
+# Part C: LOOCV and 10-fold cv
+# loo_folds <- vfold_cv(beijing, v = nrow(beijing))
+# lm_loo <- fit_resamples(lm_wf, resamples = loo_folds, metrics = metric_set(rmse),
+                       # control = control_resamples(save_pred = TRUE))
+# collect_metrics(lm_loo3)                                           # (a)
+# collect_predictions(lm_loo) |> rmse(truth = log_pm25, estimate = .pred)   # (b)
+# vfold_cv doesn't work with LOOCV, so need to use loo_cv
+# loo_folds2 <- loo_cv(beijing)
+# lm_loo2 <- fit_resamples(lm_wf, resamples = loo_folds2, metrics = metric_set(rmse),
+                       # control = control_resamples(save_pred = TRUE))
+
+# tune doesn't work with LOOCV, so need to use caret
+library(caret)
+loo_folds3 <- trainControl(method = "LOOCV")
+lm_loo3 <- train(
+  log_pm25 ~., 
+  data = beijing,
+  method = "lm", 
+  trControl = loo_folds3
+)
+print(lm_loo3$results)
+
+# 10 fold CV
+set.seed(12345)
+folds10 <- vfold_cv(beijing, v = 10)
+lm_10 <- fit_resamples(lm_wf, resamples = folds10, metrics = metric_set(rmse))
+collect_metrics(lm_10)
+```
+
+
 > **Q3.** Why do (a) and (b) in step 7 differ? (Hint: what is the RMSE of a single observation?) Which one matches the shortcut in step 8? How do the 10-fold estimates compare with LOOCV and with each other? What does the `std_err` column from `collect_metrics()` correspond to on slide 17?
+
+The RMSE of a single observation is just the absolute value of the residual for that observation. The MSE for LOOCV is 0.30^2 = 0.09 while the MSE for the 10-fold CV is 0.61^2 = 0.38. The standard error column corresponds to the estimate standard error of the cross-validation. 
+
 
 ## Part D — Choosing K for KNN regression (slides 29–34)
 
@@ -88,7 +175,38 @@ Then check how much this answer depends on the random assignment of days to fold
 12. Use `tune_grid()` with `grid = tibble(neighbors = 1:20)`, once on the LOOCV folds (with `save_pred = TRUE`; compute pooled RMSE per K as in step 7b) and once on the 10-fold folds.
 13. Plot RMSE against K for both, as on slide 30, with a horizontal line at the linear regression's LOOCV RMSE. Find the best K with `select_best()`, then `finalize_workflow()` and `fit()` it on all 360 days.
 
+```{r}
+# Part D: KNN, tuning K
+library(tidymodels)
+# KNN
+knn_spec <- nearest_neighbor(neighbors = tune(), weight_func = "rectangular") |>
+  set_engine("kknn") |>
+  set_mode("regression")
+
+# making workflow
+knn_wf <- workflow() |>
+  add_recipe(reg_rec |> step_normalize(all_numeric_predictors())) |>
+  add_model(knn_spec)
+
+set.seed(12345)
+folds10 <- vfold_cv(beijing, v = 10)
+
+# using tune grid
+knn_10 <- tune_grid(knn_wf, resamples = folds10, grid = tibble(neighbors = 1:20),
+                    metrics = metric_set(rmse))
+# tune takes the workflow, resamples gives the folds, grid is the parameter you are tuning (tuning the number of nearest neighbors here)
+
+# plot RMSE
+collect_metrics(knn_10) |> ggplot(aes(neighbors, mean)) +
+  geom_point(col = "salmon") + geom_line(col = "salmon") + labs(y = "RMSE") + theme_bw()
+select_best(knn_10, metric = "rmse")
+```
+
+
 > **Q4.** Which K does CV choose? Why is scaling essential for KNN (look at the ranges of `pres` and `wind_max`) but irrelevant for linear regression? Which model would you use to predict PM2.5, linear regression or the best KNN, and why?
+
+K = 4 achieved the lowest RMSE. Scaling is necessary for KNN because features with larger scales would dominate calculations. RMSE is slightly lower with linear regression, so I would choose linear regression.
+
 
 ## Part E — CV for classification (slides 35–39)
 
@@ -96,7 +214,33 @@ Then check how much this answer depends on the random assignment of days to fold
 15. With 10-fold CV (`set.seed(1234)`), run `fit_resamples()` with `metrics = metric_set(accuracy, kap, roc_auc, sens, spec)` and `save_pred = TRUE`.
 16. Use `probably::threshold_perf()` on `collect_predictions()` with thresholds 0.1, 0.2, …, 0.9 and `metrics = metric_set(sens, spec, accuracy)`.
 
+```{r}
+# Part E: logistic regression
+
+# workflow
+cls_rec  <- recipe(exceed ~ dewp + temp + pres + wind_max + rain_hours + wind_dir, data = beijing) |>
+  step_dummy(wind_dir)
+logit_wf <- workflow() |> add_recipe(cls_rec) |> add_model(logistic_reg())
+
+# metrics
+set.seed(1234)
+cls_folds <- vfold_cv(beijing, v = 10)
+logit_res <- fit_resamples(logit_wf, resamples = cls_folds,
+                           metrics = metric_set(accuracy, kap, roc_auc, sens, spec),
+                           control = control_resamples(save_pred = TRUE))
+
+# threshold
+probably::threshold_perf(collect_predictions(logit_res), truth = exceed, estimate = .pred_Yes,
+                         thresholds = seq(0.1, 0.9, by = 0.1),
+                         metrics = metric_set(sens, spec, accuracy, kap))
+collect_predictions(logit_res) |> 
+  roc_auc(truth = exceed, .pred_Yes)
+```
+
+
 > **Q5.** Report the CV accuracy, kappa, AUC, sensitivity and specificity. yardstick treats the **first** factor level as the event. What does `sens` mean with our level order? What would it mean with alphabetical order (`No`, `Yes`), as in the slide 38 example, and which argument fixes it? If this model were used to warn sensitive groups about high-pollution days, which threshold would you pick, and why?
+
+With level order, sensitivity measures the ability to correctly identify true positives. With alphabetical order, sensitivity would measure the ability to correctly identify an outcome of "no". The argument that fixes is estimate = .pred_Yes. If the model were used to warn sensitive gropus about high polution days, I would pick the 0.5 threshold because it has a good balance between sensitivity, specificity, and accuracy. 
 
 ## Part F — The bootstrap (slides 41–43)
 
@@ -105,8 +249,32 @@ Then check how much this answer depends on the random assignment of days to fold
     - the `wind_max` coefficient from `lm()`, and
     - the 90th percentile of `pm25`.
 19. Get 95% percentile CIs with `int_pctl()`. Get bootstrap SEs by unnesting and taking the SD. Compare the coefficient's bootstrap SE with the SE from `tidy(lm(...))`.
+```{r}
+# Part F: bootstrap
+f_reg <- log_pm25 ~ dewp + temp + pres + wind_max + rain_hours + wind_dir
+set.seed(2026)
+boots <- bootstraps(beijing, times = 1000)
+
+# tibble 
+boot_stats <- boots |>
+  mutate(stats = map(splits, function(s) {
+    d <- analysis(s)
+    bind_rows(
+      tidy(lm(f_reg, data = d)) |> filter(term == "wind_max") |> select(term, estimate),
+      tibble(term = "p90", estimate = unname(quantile(d$pm25, 0.9)))
+    )
+  }))
+
+# 95% percentiles CIs
+int_pctl(boot_stats, stats)
+```
+
+
 
 > **Q6.** Do the two SEs for the coefficient agree? Why is the bootstrap useful for the 90th percentile in particular (slide 41)?
+
+The SEs for the wind_max coefficient in bootstrap vs lm roughly agree. Bootstrap is useful for the 90th percentile because it provides an accurate way to calculate confidence intervals. 
+
 
 # Starter code
 

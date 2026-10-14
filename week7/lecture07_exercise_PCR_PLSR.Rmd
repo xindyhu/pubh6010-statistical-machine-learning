@@ -1,0 +1,185 @@
+---
+title: "Lecture 07 Exercise — PCR and PLSR"
+subtitle: "PubH 6010 Independent Study · Replicating Gibson et al. (2019): NHANES POPs and telomere length"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+This week you replicate the **principal components regression** in a published environmental-mixtures paper and then redo it the way Lecture 07 does it: choose the number of components by cross-validation, and compare it with **partial least squares regression**.
+
+> Gibson EA, Nunez Y, Abuawad A, Zota AR, Renzetti S, Devick KL, Gennings C, Goldsmith J, Coull BA, Kioumourtzoglou MA. An overview of methods to address distinct research questions on environmental mixtures: an application to persistent organic pollutants and leukocyte telomere length. *Environmental Health.* 2019;18:76. doi:[10.1186/s12940-019-0515-1](https://doi.org/10.1186/s12940-019-0515-1) (open access)
+
+You already know this paper and its data from Week 3, where you ran the PCA. The authors then used the PC scores as predictors in a regression for telomere length, which is PCR. Their code and data are public at <https://github.com/lizzyagibson/SHARP.Mixtures.Workshop> (the PCA model is in `Unsupervised/PCA/PCA.Rmd`).
+
+**Reading before you start.** In the paper, read the Background, *Statistical analysis* (p. 3), the PCA paragraph in Methods (p. 4), the Results sections *Principal component analysis* and *Variable selection* (pp. 7–8), **Table 1** (the PC1–PC3 coefficients you will replicate), Fig. 3 and Table 2.
+
+As in Week 6, the code uses **tidymodels** instead of the slides' caret:
+
+| caret (slides) | here |
+|---|---|
+| `train(..., method = "pcr", scale = TRUE)` | `recipe()` + `step_normalize()` + `step_pca(num_comp = tune())`, with `linear_reg()` |
+| `train(..., method = "pls", scale = TRUE)` | `recipe()` + `step_normalize()` + `step_pls(num_comp = tune())`, with `linear_reg()` |
+| `trainControl(method = "cv", number = 10)` | `vfold_cv(data, v = 10)` |
+| `tuneGrid = data.frame(ncomp = 1:8)` | `tune_grid(..., grid = tibble(num_comp = 1:18))` |
+| "1-SE rule" (read off the plot) | `select_by_one_std_err()` |
+| `coef(finalModel, ncomp = 7)` | loadings from `tidy()` of the recipe step × coefficients from `tidy()` of the model (slide 44) |
+
+**Install once.**
+
+```{r install, eval=FALSE}
+install.packages(c("tidymodels", "BiocManager"))
+BiocManager::install("mixOmics", update = FALSE, ask = FALSE)
+# step_pls() uses mixOmics; it is on Bioconductor, not CRAN.
+# update = FALSE skips the "Update all/some/none?" prompt. Updating packages that are
+# already loaded can hang RStudio, so do any updates in a fresh R session.
+```
+
+If you see `package 'mixOmics' is not available for this version of R`, you used `install.packages("mixOmics")`. mixOmics is not on CRAN, so use the `BiocManager` line above. If the install seems to hang, look for an RStudio "restart R?" dialog hidden behind the main window, or press Stop, restart R and rerun it. If that also fails, your R version doesn't match the current Bioconductor release. Do Part D with the CRAN fallback in the starter code (the `pls` package).
+
+**Load mixOmics first.** mixOmics attaches MASS and has its own `map()`. If you load it *after* the tidyverse, `select()` and `map()` stop working. Load it before tidyverse, as in the starter code.
+
+The free book *Tidy Modeling with R* (<https://www.tmwr.org>) covers `step_pca()` and `step_pls()` in chapter 16 and tuning in chapters 12–13.
+
+# Data
+
+`studypop.csv` is the same file as Week 3: NHANES 2001–2002 adults, 1,330 rows × 33 columns, from the authors' repository. Column names are upper case in the file; the starter code makes them lower case.
+
+| Column | Meaning |
+|---|---|
+| `TELOMEAN` | Mean leukocyte telomere length (T/S ratio). **Outcome**, modeled as `log_ltl = log(telomean)` |
+| `LBX074LA`, `LBX099LA`, `LBX118LA`, `LBX138LA`, `LBX153LA`, `LBX170LA`, `LBX180LA`, `LBX187LA`, `LBX194LA` | PCBs 74, 99, 118, 138, 153, 170, 180, 187, 194 |
+| `LBXPCBLA`, `LBXHXCLA` | Non-ortho (dioxin-like) PCBs: PCB 126 and PCB 169 |
+| `LBXD03LA`, `LBXD05LA`, `LBXD07LA` | Dioxins: 1,2,3,6,7,8-hxcdd; 1,2,3,4,6,7,8-hpcdd; OCDD |
+| `LBXF03LA`, `LBXF04LA`, `LBXF05LA`, `LBXF08LA` | Furans: 2,3,4,7,8-pncdf; 1,2,3,4,7,8-hxcdf; 1,2,3,6,7,8-hxcdf; 1,2,3,4,6,7,8-hpcdf (the paper calls the last one "hxcdf") |
+| `LBXWBCSI` | White blood cell count (1000 cells/µL) |
+| `LBXLYPCT`, `LBXMOPCT`, `LBXNEPCT`, `LBXEOPCT`, `LBXBAPCT` | Lymphocyte, monocyte, neutrophil, eosinophil, basophil % |
+| `age_cent`, `age_sq` | Age (centered) and its square |
+| `bmi_cat3`, `edu_cat`, `race_cat`, `male` | BMI category, education, race/ethnicity, sex (all categorical) |
+| `ln_lbxcot` | log serum cotinine (smoking). Listed as a covariate in the paper's Methods; see Part B |
+| `SEQN` | NHANES ID |
+
+The 18 POPs are lipid-adjusted serum concentrations. They are log-transformed before any analysis.
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — The analytic sample
+
+1. Read the data, make the names lower case, and keep the rows with no missing values in the outcome, the 18 POPs and the 13 covariates (`drop_na()`). Create `log_ltl` and make the four categorical covariates factors.
+2. Compute the correlation matrix of the 18 **log** POPs and look at its range.
+
+> **Q1.** How many participants are in the analytic sample? Does it match the paper? Why is it different from the 1,007 complete cases you had for the PCA in Week 3? What do the correlations tell you about fitting least squares to all 18 POPs (slides 7–8)?
+
+## Part B — Replicate the paper's PCR
+
+3. Run `prcomp()` on the 18 log POPs with `scale. = TRUE`. Print the proportion of variance explained and the loadings of PC1–PC3.
+4. Add the PC1–PC3 scores to the data. Fit the authors' model with `lm()`: `log_ltl` on PC1, PC2, PC3, the six cell-count variables, `age_cent`, `age_sq`, `bmi_cat3`, `edu_cat`, `race_cat` and `male`. Get the PC coefficients, 95% CIs and p-values with `tidy(conf.int = TRUE)`.
+5. Compare them with **Table 1**. Then add `ln_lbxcot`, which the Methods (p. 3) say every model adjusts for, and compare again. Which model reproduces Table 1?
+6. Refit with the three PCs only (no covariates).
+
+> **Q2.** Do your coefficients match Table 1, and with or without cotinine? What does that tell you about the paper? The paper says that overall POP exposure is *positively* associated with LTL. Reconcile that with the sign of your PC1 coefficient (look at the PC1 loadings). How did the authors choose 3 components (p. 4), and how does that differ from slide 39? What happens to the PC1 coefficient without covariates, and why? (Check `cor(PC1, age_cent)`.)
+
+## Part C — PCR the lecture's way (slides 37–45)
+
+Now the question is **prediction**: how well do the 18 POPs alone predict log LTL? This mirrors the PSA example, with no covariates.
+
+7. Build a recipe for `log_ltl` on the 18 POPs: `step_log()`, `step_normalize()`, then `step_pca(all_predictors(), num_comp = tune())`. Combine with `linear_reg()` in a workflow.
+8. After `set.seed(1234)`, create `vfold_cv(v = 10)`. Tune over `num_comp = 1:18` with `metrics = metric_set(rmse, rsq)`.
+9. Plot CV RMSE ± 1 SE against M (slide 43), with a dashed line at the CV RMSE of an intercept-only model (`recipe(log_ltl ~ 1, ...)`) on the same folds. Find the best M with `select_best()` and the 1-SE choice with `select_by_one_std_err(..., num_comp, metric = "rmse")`.
+10. Fit the 1-SE model on all the data and recover the coefficients on the 18 standardized POPs, β̂_j = Σ_m θ̂_m φ̂_jm (slide 44): the loadings φ come from `extract_recipe(fit) |> tidy(number = 3)` and the θ from `extract_fit_parsnip(fit) |> tidy()`.
+
+> **Q3.** Which M does CV choose, and which does the 1-SE rule choose? How much better than the intercept-only model is the best PCR? PC1 explains 63% of the POP variance. Is it the most useful component for predicting LTL? Which slide describes this? Can the coefficients from step 10 be read as effects of each POP?
+
+## Part D — PLSR (slides 46–51)
+
+11. Repeat Part C with `step_pls(all_predictors(), outcome = "log_ltl", num_comp = tune())` in place of `step_pca()`. Use the **same folds**.
+12. Plot the PCR and PLSR CV curves on one graph.
+
+> **Q4.** How many components does PLSR need compared with PCR (best and 1-SE)? Is either method better at its best? What should both equal at M = 18? Explain the difference in terms of how the components are built (slides 47–48). Is this the same pattern as the PSA example?
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(mixOmics)      # load FIRST (see Overview)
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+
+pops <- c("lbx074la", "lbx099la", "lbx118la", "lbx138la", "lbx153la", "lbx170la",
+          "lbx180la", "lbx187la", "lbx194la", "lbxpcbla", "lbxhxcla",
+          "lbxd03la", "lbxd05la", "lbxd07la",
+          "lbxf03la", "lbxf04la", "lbxf05la", "lbxf08la")
+covars <- c("lbxwbcsi", "lbxlypct", "lbxmopct", "lbxnepct", "lbxeopct", "lbxbapct",
+            "age_cent", "age_sq", "bmi_cat3", "edu_cat", "race_cat", "male", "ln_lbxcot")
+
+# Part A
+pop <- read_csv("studypop.csv", show_col_types = FALSE) |>
+  rename_with(tolower) |>
+  drop_na(telomean, all_of(pops), all_of(covars)) |>
+  mutate(log_ltl = log(telomean),
+         across(c(bmi_cat3, edu_cat, race_cat, male), factor)) |>
+  select(seqn, log_ltl, all_of(covars), all_of(pops))
+
+# Part B: the paper's PCR
+log_pops <- pop |> select(all_of(pops)) |> mutate(across(everything(), log))
+pca_fit  <- prcomp(____, scale. = TRUE)
+pop_pc   <- bind_cols(pop, as_tibble(pca_fit$x[, 1:3]))
+pcr_paper <- lm(log_ltl ~ PC1 + PC2 + PC3 + ____, data = pop_pc)   # covariates WITHOUT ln_lbxcot
+tidy(pcr_paper, conf.int = TRUE) |> filter(str_detect(term, "^PC"))
+pcr_methods <- update(pcr_paper, . ~ . + ln_lbxcot)                # as the Methods describe
+
+# Part C: PCR, number of components chosen by 10-fold CV
+pop_x <- pop |> select(log_ltl, all_of(pops))
+pop_rec <- recipe(log_ltl ~ ., data = pop_x) |>
+  step_log(all_predictors()) |>
+  step_normalize(all_predictors())
+pcr_wf <- workflow() |>
+  add_recipe(pop_rec |> step_pca(all_predictors(), num_comp = tune())) |>
+  add_model(linear_reg())
+
+set.seed(1234)
+folds <- vfold_cv(pop_x, v = 10)
+pcr_res <- tune_grid(pcr_wf, resamples = folds, grid = tibble(num_comp = 1:18),
+                     metrics = metric_set(rmse, rsq))
+collect_metrics(pcr_res)
+select_best(pcr_res, metric = "rmse")
+select_by_one_std_err(pcr_res, num_comp, metric = "rmse")
+
+pcr_final <- pcr_wf |> finalize_workflow(tibble(num_comp = ____)) |> fit(data = pop_x)
+theta <- pcr_final |> extract_fit_parsnip() |> tidy()      # theta_m (drop the intercept)
+phi   <- pcr_final |> extract_recipe() |> tidy(number = 3) # phi_jm: terms, value, component
+# join by component, then summarise(beta = sum(phi * theta), .by = terms)
+
+# Part D: PLSR -- swap the last recipe step
+pls_wf <- workflow() |>
+  add_recipe(pop_rec |> step_pls(all_predictors(), outcome = "log_ltl", num_comp = tune())) |>
+  add_model(linear_reg())
+
+# Part D fallback if mixOmics will not install (CRAN package "pls", same folds):
+# library(pls)
+# segs <- map(folds$splits, complement)   # each fold's held-out rows
+# pls_cv <- plsr(log_ltl ~ ., data = pop_x |> mutate(across(all_of(pops), log)),
+#                ncomp = 18, scale = TRUE, validation = "CV", segments = segs)
+# RMSEP(pls_cv, estimate = "CV")   # pooled CV RMSE by number of components
+# (Pooled over all rows, so the values differ slightly from tune's mean of fold RMSEs.)
+
+```
+
+# Check your numbers
+
+- Analytic sample: 1,003. PC1 explains about 63% of the POP variance; PC1–PC3 about 80%.
+- Part B, PC1 (Table 1 model): β ≈ −0.012 (95% CI about −0.018 to −0.005); PC2 p ≈ 0.87, PC3 p ≈ 0.76.
+- Part C: the intercept-only CV RMSE is about 0.232, and the best PCR is about 0.217.
+
