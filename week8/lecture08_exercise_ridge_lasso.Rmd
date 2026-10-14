@@ -77,6 +77,12 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 
 ## Part D — Elastic net (slide 36)
 
+**What elastic net is.** The lecture names elastic net (slide 36) but doesn't cover it. It combines the ridge and LASSO penalties in one criterion:
+
+$$\sum_{i=1}^n \Big(y_i - \beta_0 - \sum_{j=1}^p \beta_j x_{ij}\Big)^2 + \lambda \Big[\alpha \sum_{j=1}^p |\beta_j| + \tfrac{1-\alpha}{2} \sum_{j=1}^p \beta_j^2\Big]$$
+
+λ sets the overall amount of shrinkage, as before, and α (`mixture` in tidymodels) sets the mix: α = 1 is LASSO, α = 0 is ridge, and values in between use both. Because the LASSO part is still there, elastic net can set coefficients exactly to zero and so still does variable selection. The ridge part fixes LASSO's main weakness with correlated predictors. Given a group of highly correlated exposures, LASSO tends to keep one, somewhat arbitrarily, and drop the rest. Ridge shrinks their coefficients toward each other. Elastic net therefore tends to keep or drop correlated predictors *together* (the "grouping effect"), which suits exposure mixtures like these POPs. In the picture on slide 22, the elastic net constraint region lies between the diamond and the circle. It still has corners on the axes, so exact zeros are possible, but its edges are curved. The price is a second tuning parameter: α and λ are chosen jointly by CV over a grid. (Zou H, Hastie T. *J R Stat Soc B.* 2005;67:301–320; ESL §3.4.3; Gibson et al. p. 5.)
+
 9. Tune `penalty` and `mixture` together: `expand_grid(penalty = 10^seq(-4, -1, length.out = 40), mixture = seq(0.1, 1, by = 0.1))`, on the **same folds**.
 10. Report the best (α, λ). Then, for each α, report the best CV RMSE and its SE (`slice_min(mean, n = 1, by = mixture)`). List the POPs the best elastic net selects.
 
@@ -161,6 +167,8 @@ ridge_wf <- lasso_wf |>
 enet_wf <- lasso_wf |>
   update_model(linear_reg(penalty = tune(), mixture = tune()) |>
                  set_engine("glmnet", penalty.factor = pf_tm))
+
+
 ```
 
 # Check your numbers
