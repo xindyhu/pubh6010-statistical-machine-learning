@@ -1,7 +1,7 @@
 ---
 title: "Lecture 07 Exercise — PCR and PLSR"
 subtitle: "PubH 6010 Independent Study · Replicating Gibson et al. (2019): NHANES POPs and telomere length"
-author: "Your name:"
+author: "Kate O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -80,7 +80,37 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 1. Read the data, make the names lower case, and keep the rows with no missing values in the outcome, the 18 POPs and the 13 covariates (`drop_na()`). Create `log_ltl` and make the four categorical covariates factors.
 2. Compute the correlation matrix of the 18 **log** POPs and look at its range.
 
+```{r}
+library(mixOmics)      # load FIRST (see Overview)
+library(tidyverse)
+library(tidymodels)
+tidymodels_prefer()
+
+pops <- c("lbx074la", "lbx099la", "lbx118la", "lbx138la", "lbx153la", "lbx170la",
+          "lbx180la", "lbx187la", "lbx194la", "lbxpcbla", "lbxhxcla",
+          "lbxd03la", "lbxd05la", "lbxd07la",
+          "lbxf03la", "lbxf04la", "lbxf05la", "lbxf08la")
+covars <- c("lbxwbcsi", "lbxlypct", "lbxmopct", "lbxnepct", "lbxeopct", "lbxbapct",
+            "age_cent", "age_sq", "bmi_cat3", "edu_cat", "race_cat", "male", "ln_lbxcot")
+
+# Part A
+pop <- read_csv("studypop.csv", show_col_types = FALSE) |>
+  rename_with(tolower) |>
+  drop_na(telomean, all_of(pops), all_of(covars)) |>
+  mutate(log_ltl = log(telomean),
+         across(c(bmi_cat3, edu_cat, race_cat, male), factor)) |>
+  select(seqn, log_ltl, all_of(covars), all_of(pops))
+
+# correlation
+library(corrplot)
+cor_matrix <- cor(pop[, pops])
+corrplot(cor_matrix)
+```
+
+
 > **Q1.** How many participants are in the analytic sample? Does it match the paper? Why is it different from the 1,007 complete cases you had for the PCA in Week 3? What do the correlations tell you about fitting least squares to all 18 POPs (slides 7–8)?
+
+There are 1,003 participants in the analytic sample. This matches the paper. It is different from the week 3 exercise because any participants who have an NA value for any POP variables are dropped. The correlations tell us that several of the POPs might be dropped when fitting least squares because they are highly correlated. 
 
 ## Part B — Replicate the paper's PCR
 
@@ -89,7 +119,39 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 5. Compare them with **Table 1**. Then add `ln_lbxcot`, which the Methods (p. 3) say every model adjusts for, and compare again. Which model reproduces Table 1?
 6. Refit with the three PCs only (no covariates).
 
+```{r}
+
+# running prcomp() on the 18 log POPs
+log_pops <- pop |> select(all_of(pops)) |> mutate(across(everything(), log))
+pca_fit  <- prcomp(log_pops, scale. = TRUE)
+pop_pc   <- bind_cols(pop, as_tibble(pca_fit$x[, 1:3]))
+
+# proportion of variance explained
+summary(pca_fit)
+
+# add the PC1-PC3 scores to the data and refit model
+pcr_paper <- lm(log_ltl ~ PC1 + PC2 + PC3 + age_cent + age_sq + bmi_cat3 + edu_cat + race_cat + male, data = pop_pc)   
+
+# compare with table 1
+tidy(pcr_paper, conf.int = TRUE) |> filter(str_detect(term, "^PC"))
+pcr_methods <- update(pcr_paper, . ~ . + ln_lbxcot)
+tidy(pcr_methods, conf.int = TRUE) |> filter(str_detect(term, "^PC"))
+
+# refit with the three PCs only
+pcr_paper <- lm(log_ltl ~ PC1 + PC2 + PC3, data = pop_pc)   
+
+# checking loadings of PC1
+pca_fit$rotation[, 1]
+
+
+cor(pop_pc$PC1, pop_pc$age_cent)
+```
+
+
 > **Q2.** Do your coefficients match Table 1, and with or without cotinine? What does that tell you about the paper? The paper says that overall POP exposure is *positively* associated with LTL. Reconcile that with the sign of your PC1 coefficient (look at the PC1 loadings). How did the authors choose 3 components (p. 4), and how does that differ from slide 39? What happens to the PC1 coefficient without covariates, and why? (Check `cor(PC1, age_cent)`.)
+
+The coefficients without cotinine match table 1, which indicates that the authors did not include cotinine in their model. The sign of the PC1 coefficient is negative. Because the coefficient is negative and the loadings for PC1 are negative, the effect on the outcome is positive. The authors chose three components because they decided prior to analysis to select PCs that account for >75% of the total variance. This differs from slide 39, which suggests to select the PCs based on cross-validation (using MSE). Without covariates, the coefficient for PC1 becomes positive.  
+
 
 ## Part C — PCR the lecture's way (slides 37–45)
 
@@ -100,14 +162,110 @@ Now the question is **prediction**: how well do the 18 POPs alone predict log LT
 9. Plot CV RMSE ± 1 SE against M (slide 43), with a dashed line at the CV RMSE of an intercept-only model (`recipe(log_ltl ~ 1, ...)`) on the same folds. Find the best M with `select_best()` and the 1-SE choice with `select_by_one_std_err(..., num_comp, metric = "rmse")`.
 10. Fit the 1-SE model on all the data and recover the coefficients on the 18 standardized POPs, β̂_j = Σ_m θ̂_m φ̂_jm (slide 44): the loadings φ come from `extract_recipe(fit) |> tidy(number = 3)` and the θ from `extract_fit_parsnip(fit) |> tidy()`.
 
+```{r}
+# building recipe for log_ltl on the 18 POPs
+pop_x <- pop |> select(log_ltl, all_of(pops))
+pop_rec <- recipe(log_ltl ~ ., data = pop_x) |>
+  step_log(all_predictors()) |>
+  step_normalize(all_predictors())
+pcr_wf <- workflow() |>
+  add_recipe(pop_rec |> step_pca(all_predictors(), num_comp = tune())) |>
+  add_model(linear_reg())
+
+# 10 fold cross validation
+set.seed(1234)
+folds <- vfold_cv(pop_x, v = 10)
+pcr_res <- tune_grid(pcr_wf, resamples = folds, grid = tibble(num_comp = 1:18),
+                     metrics = metric_set(rmse, rsq))
+collect_metrics(pcr_res)
+select_best(pcr_res, metric = "rmse")
+select_by_one_std_err(pcr_res, num_comp, metric = "rmse")
+
+# plotting CV RMSE +/- 1 SE against M
+pcr_metrics <- collect_metrics(pcr_res) %>% 
+  filter(.metric == "rmse")
+
+ggplot(pcr_metrics, aes(x = num_comp, y = mean)) + 
+  geom_line(color = "darkgreen") + 
+  geom_point(color = "darkgreen", size = 2) + 
+  geom_errorbar(
+    aes(ymin = mean - std_err, ymax = mean + std_err), 
+    width = 0.2, 
+    color = "darkgray"
+  ) + 
+  scale_x_continuous(breaks = 1:18) +
+  labs(
+    x = "Number of Principal Components (M)",
+    y = "Cross-Validated RMSE",
+    title = "PCR: 10-Fold CV RMSE vs Number of Components"
+  ) +
+  theme_bw()
+
+# fit the 1-SE model on all data
+pcr_final <- pcr_wf |> finalize_workflow(tibble(num_comp = 4)) |> fit(data = pop_x)
+theta <- pcr_final |> extract_fit_parsnip() |> tidy()      # theta_m (drop the intercept)
+phi   <- pcr_final |> extract_recipe() |> tidy(number = 3) # phi_jm: terms, value, component
+# join by component, then summarise(beta = sum(phi * theta), .by = terms)
+theta_c <- theta |> filter(term != "(Intercept)")
+beta_estimates <- phi |> 
+  inner_join(theta_c, by = c("component" = "term")) |>
+  summarise(beta = sum(value*estimate), .by = terms)
+print(beta_estimates)
+```
+
+
 > **Q3.** Which M does CV choose, and which does the 1-SE rule choose? How much better than the intercept-only model is the best PCR? PC1 explains 63% of the POP variance. Is it the most useful component for predicting LTL? Which slide describes this? Can the coefficients from step 10 be read as effects of each POP?
+
+CV chooses 9 principal components. The 1-SE rule chooses 4 principal components. The intercept only CV RMSE is about 0.232 and the best PCR is about 0.217. It is not the most useful component for predicting LTL. Slide 29 describes this. The coefficients from step 10 cannot be read as effects of each POP. 
+
 
 ## Part D — PLSR (slides 46–51)
 
 11. Repeat Part C with `step_pls(all_predictors(), outcome = "log_ltl", num_comp = tune())` in place of `step_pca()`. Use the **same folds**.
 12. Plot the PCR and PLSR CV curves on one graph.
+```{r}
+pls_wf <- workflow() |>
+  add_recipe(pop_rec |> step_pls(all_predictors(), outcome = "log_ltl", num_comp = tune())) |>
+  add_model(linear_reg())
+
+# CV
+pls_res <- tune_grid(
+  pls_wf, 
+  resamples = folds, 
+  grid = tibble(num_comp = 1:18),
+  metrics = metric_set(rmse, rsq)
+)
+
+# extract metrics and combine datasets
+combined_metrics <- bind_rows(
+  collect_metrics(pcr_res) |> mutate(Model = "PCR"),
+  collect_metrics(pls_res) |> mutate(Model = "PLSR")
+) |> 
+  filter(.metric == "rmse")
+
+# plot curves
+ggplot(combined_metrics, aes(x = num_comp, y = mean, color = Model, group = Model)) + 
+  geom_line(linewidth = 0.8) + 
+  geom_point(size = 2) + 
+  geom_errorbar(
+    aes(ymin = mean - std_err, ymax = mean + std_err), 
+    width = 0.2, 
+    alpha = 0.6
+  ) + 
+  scale_x_continuous(breaks = 1:18) +
+  labs(
+    x = "Number of Components (M)",
+    y = "Cross-Validated RMSE",
+    title = "10-Fold CV RMSE Comparison: PCR vs PLSR",
+    color = "Model Type"
+  ) +
+  theme_bw()
+```
+
 
 > **Q4.** How many components does PLSR need compared with PCR (best and 1-SE)? Is either method better at its best? What should both equal at M = 18? Explain the difference in terms of how the components are built (slides 47–48). Is this the same pattern as the PSA example?
+
+The PLSR needs three components compared to PCR (9 with best and 4 with 1-SE). At its best, the PLSR method is slightly better. At M = 18, both models should yield the same values. The PLSR model is built similar to PCR, but includes the response variable when building the model. This is a similar pattern as the PSA example. 
 
 # Starter code
 
