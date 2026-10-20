@@ -1,7 +1,7 @@
 ---
 title: "Lecture 08 Exercise — Ridge, LASSO and Elastic Net"
 subtitle: "PubH 6010 Independent Study · Replicating Gibson et al. (2019): NHANES POPs and telomere length"
-author: "Your name:"
+author: "Katie O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -58,7 +58,53 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 2. Follow the authors' code: `x <- model.matrix(log_ltl ~ ., data = pop)[, -1]`, a `penalty.factor` that is 1 for POPs and 0 otherwise, then `set.seed(2)`, `cv.glmnet(x, y, alpha = 1, penalty.factor = pf, type.measure = "mse")`, and refit `glmnet()` at `lambda.min`. Print λ and the non-zero POP coefficients.
 3. Do it again after running `RNGkind(sample.kind = "Rounding")` before `set.seed(2)`. Afterwards, restore the default with `RNGkind(sample.kind = "Rejection")`.
 
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(glmnet)
+tidymodels_prefer()
+
+pops <- c("lbx074la", "lbx099la", "lbx118la", "lbx138la", "lbx153la", "lbx170la",
+          "lbx180la", "lbx187la", "lbx194la", "lbxpcbla", "lbxhxcla",
+          "lbxd03la", "lbxd05la", "lbxd07la",
+          "lbxf03la", "lbxf04la", "lbxf05la", "lbxf08la")
+covars <- c("lbxwbcsi", "lbxlypct", "lbxmopct", "lbxnepct", "lbxeopct", "lbxbapct",
+            "age_cent", "age_sq", "bmi_cat3", "edu_cat", "race_cat", "male", "ln_lbxcot")
+
+pop <- read_csv("studypop.csv", show_col_types = FALSE) |>
+  rename_with(tolower) |>
+  drop_na(telomean, all_of(pops), all_of(covars)) |>
+  mutate(log_ltl = log(telomean),
+         across(all_of(pops), log),
+         across(c(bmi_cat3, edu_cat, race_cat, male), factor)) |>
+  select(log_ltl, all_of(pops), all_of(covars))
+
+# Part A: the authors' approach
+x  <- model.matrix(log_ltl ~ ., data = pop)[, -1]
+y  <- pop$log_ltl
+pf <- as.numeric(colnames(x) %in% pops)
+
+# fitting model
+set.seed(2)
+cv_paper <- cv.glmnet(x, y, alpha = 1, penalty.factor = pf, type.measure = "mse")
+cv_paper$lambda.min
+coef(glmnet(x, y, alpha = 1, penalty.factor = pf, lambda = cv_paper$lambda.min))[pops, 1]
+
+# refitting after setting to rounding
+RNGkind(sample.kind = "Rounding")
+set.seed(2)
+cv_paper <- cv.glmnet(x, y, alpha = 1, penalty.factor = pf, type.measure = "mse")
+cv_paper$lambda.min
+coef(glmnet(x, y, alpha = 1, penalty.factor = pf, lambda = cv_paper$lambda.min))[pops, 1]
+
+RNGkind(sample.kind = "Rejection")
+```
+
+
 > **Q1.** Do you reproduce the paper's λ = 0.0034 and its four selected POPs (pp. 7–8)? Which run matches, and why does `set.seed(2)` alone not reproduce a 2019 analysis? (Look up what changed in R 3.6.0.) Compare your coefficients with the paper's. The paper says pncdf's β of 0.02 means "a one standard deviation increase … is associated with a 0.02 unit increase in log-LTL." glmnet reports coefficients on the scale of `x`. What scale is that, and is the paper's sentence right?
+
+Lambda = 0.0034 is reproduced, along with the four POPs (PCB 99, PCB 118, furan 2,3,4,7,8-pncdf, and PCB 126). The second run matches. Using set.seed alone does not reproduce a 2019 analysis because in R 3.6.0, the default sampling algorithm for sample() changed from rounding to rejection. R 3.6.0 was released in mid 2019, so a paper published in 2019 would be using an earlier version of R. X is the scale of the POPs. The paper's sentence is correct. 
+
 
 ## Part B — The same LASSO in tidymodels (slides 17–19, 25–28)
 
@@ -66,14 +112,118 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 5. After `set.seed(1234)`, create `vfold_cv(pop, v = 10)`. Tune over `grid_regular(penalty(range = c(-4, -1)), levels = 60)` (λ from 10⁻⁴ to 0.1). Get λ_min with `select_best()` and λ_1SE with `select_by_one_std_err(..., desc(penalty))`.
 6. Plot CV RMSE ± 1 SE against log(λ) (slide 28). Add a dashed line at the CV RMSE of a **covariates-only** linear model (no POPs) on the same folds.
 7. Fit at λ_min and at λ_1SE, and list the non-zero POP coefficients. Plot the 18 POP coefficient paths (slide 18).
+```{r}
+# Part B: tidymodels
+
+# recipe 
+rec <- recipe(log_ltl ~ ., data = pop) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+baked_names <- rec |> prep() |> bake(new_data = NULL) |> select(-log_ltl) |> names()
+pf_tm <- as.numeric(baked_names %in% pops)
+
+lasso_wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(linear_reg(penalty = tune(), mixture = 1) |>
+              set_engine("glmnet", penalty.factor = pf_tm))
+
+# cross validation
+set.seed(1234)
+folds <- vfold_cv(pop, v = 10)
+lasso_res <- tune_grid(lasso_wf, resamples = folds,
+                       grid = grid_regular(penalty(range = c(-4, -1)), levels = 60),
+                       metrics = metric_set(rmse, rsq))
+best_min <- select_best(lasso_res, metric = "rmse")
+best_1se <- select_by_one_std_err(lasso_res, desc(penalty), metric = "rmse")
+
+lasso_fit <- lasso_wf |> finalize_workflow(best_min) |> fit(data = pop)
+tidy(lasso_fit) |> filter(term %in% pops, estimate != 0)
+
+# determining with 1-SE rule
+lasso_fit_1se <- lasso_wf |> 
+  finalize_workflow(best_1se) |> 
+  fit(data = pop)
+tidy(lasso_fit_1se) |> 
+  filter(term %in% pops, estimate != 0)
+
+# coefficient paths: the fitted glmnet object holds the whole path
+extract_fit_engine(lasso_fit) |>
+  tidy(return_zeros = TRUE) |>
+  filter(term %in% pops) |>
+  ggplot(aes(log(lambda), estimate, colour = term)) + geom_line()
+
+# covariates-only comparison on the same folds
+cov_only <- workflow() |>
+  add_recipe(recipe(log_ltl ~ ., data = pop |> select(-all_of(pops)))) |>
+  add_model(linear_reg()) |>
+  fit_resamples(folds) |>
+  collect_metrics()
+
+# plotting RMSE ± 1 SE against log(λ)
+metrics_df <- collect_metrics(lasso_res) %>%
+  filter(.metric == "rmse") 
+# adding line for covariates only model
+cov_rmse <- cov_only |>
+  filter(.metric == "rmse") |>
+  pull(mean)
+ggplot(metrics_df, aes(x = log(penalty), y = mean)) + 
+  geom_point(color = "blue", size = 2) + 
+  geom_line(color = "blue", alpha = 0.6) + 
+  geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err), wide = 0.05, color = "grey") + 
+  geom_hline(yintercept = cov_rmse, linetype = "dashed", color = "black", linewidth = 0.8)+
+  scale_x_reverse() + 
+  labs(x = "log(lambda)", 
+       y = "RMSE", 
+       title = "lasso cross-validation") + 
+  theme_minimal()
+
+```
+
 
 > **Q2.** Compare λ_min and the selected POPs with Part A. Your coefficients are now per SD of log POP. Does pre-standardizing change *which* POPs are selected, or only the units? How many POPs survive the 1-SE rule (slide 27), and what does that model reduce to? How much do the 18 POPs improve CV RMSE over the covariates-only model, relative to one SE? What does that say about LASSO here as a *prediction* tool versus a *screening* tool?
+
+λ_min is 0.0298. The selected POPS are PCB 99, PCB 118, PCB 169, 2,3,4,7,8-pentachlorodibenzofuran, and  1,2,3,4,6,7,8-heptachlorodibenzofuran. None of the POPs survive the 1-SE rule and it reduces the model to 0. The CV RMSE with the 18 POPS is about 0.202 and the CV RMSE for the covariates only model is about 0.203. This implies that lasso is a good prediction tool. 
 
 ## Part C — Ridge (slides 9–14, 22–23)
 
 8. Repeat Part B with `mixture = 0` and `penalty(range = c(-3, 1))`. Fit at the CV-best λ, list the 18 coefficients, and plot the paths.
+```{r}
+# Part C: ridge -- swap the model
+ridge_wf <- lasso_wf |>
+  update_model(linear_reg(penalty = tune(), mixture = 0) |>
+                 set_engine("glmnet", penalty.factor = pf_tm))
+
+set.seed(1234)
+ridge_res <- tune_grid(
+  ridge_wf, resamples = folds, grid = grid_regular(penalty(range = c(-3, 1)), levels = 60), 
+  metrics = metric_set(rmse, rsq)
+)
+
+best_ridge_min <- select_best(ridge_res, metric = "rmse")
+print(best_ridge_min)
+
+ridge_fit <- ridge_wf |>
+  finalize_workflow(best_ridge_min) |>
+  fit(data = pop)
+
+tidy(ridge_fit) |> filter(term %in% pops)
+
+extract_fit_engine(ridge_fit) |>
+  tidy(return_zeroes = TRUE) |>
+  filter(term %in% pops) |>
+  ggplot(aes(x = log(lambda), y = estimate, color = term)) + 
+  geom_line(linewidth = 0.8) + 
+  labs(x = "log(lambda", y = "coefficient estimate", title = "ridge coefficient paths for POPs", 
+       color = "POP variable") + 
+  theme_minimal()+ 
+  theme(legend.position = "right")
+
+```
+
 
 > **Q3.** How does ridge's best CV RMSE compare with LASSO's? Does ridge set any POP coefficient to zero, and why not (slide 22)? Which POPs get the largest ridge coefficients, and which POP does ridge weight that LASSO dropped? (Check its correlations with the LASSO-selected POPs.) Some ridge coefficients are negative. Should you interpret them? Why is ridge's λ on a different scale from LASSO's?
+
+The best ridge CV RMSE is 0.0925, which is higher than LASSOs. Ridge does not set any POP coefficient to zero because that is not how the method works. The POPs with the largest ridge coefficients are 1,2,3,6,7,8-hexachlorodibenzo-p-dioxin, PCB 118, PCB 169, PCB 156 (hexachlorobiphenyl), and 1,2,3,4,6,7,8-heptachlorodibenzofuran. Technically, ridge weights all 18 POPs, whereas Lasso only kept five (PCB 99, PCB 118, PCB 169, 2,3,4,7,8-pentachlorodibenzofuran, and  1,2,3,4,6,7,8-heptachlorodibenzofuran). Yes, you can interpret negative coefficients. Ridge's lambda is on a different scale from LASSO's because the penalty values are calcualted differently. 
 
 ## Part D — Elastic net (slide 36)
 
@@ -85,9 +235,51 @@ $$\sum_{i=1}^n \Big(y_i - \beta_0 - \sum_{j=1}^p \beta_j x_{ij}\Big)^2 + \lambda
 
 9. Tune `penalty` and `mixture` together: `expand_grid(penalty = 10^seq(-4, -1, length.out = 40), mixture = seq(0.1, 1, by = 0.1))`, on the **same folds**.
 10. Report the best (α, λ). Then, for each α, report the best CV RMSE and its SE (`slice_min(mean, n = 1, by = mixture)`). List the POPs the best elastic net selects.
+```{r}
+# Part D: elastic net -- tune both
+enet_wf <- lasso_wf |>
+  update_model(linear_reg(penalty = tune(), mixture = tune()) |>
+                 set_engine("glmnet", penalty.factor = pf_tm))
+
+enet_grid <- expand_grid(
+  penalty = 10^seq(-4, -1, length.out = 40), 
+  mixture = seq(0.1, 1, by = 0.1)
+)
+
+set.seed(1234)
+enet_res <- tune_grid(
+  enet_wf, 
+  resamples = folds, 
+  grid = enet_grid, 
+  metrics = metric_set(rmse, rsq)
+)
+
+best_enet <- select_best(enet_res, metric = "rmse")
+print(best_enet)
+show_best(enet_res, metric = "rmse", n = 1)
+
+best_enet_1se <- select_by_one_std_err(enet_res, metric = "rmse", desc(penalty))
+print(best_enet_1se)
+
+best_per_mixture <- collect_metrics(enet_res) |>
+  filter(.metric == "rmse") |>
+  slice_min(mean, n=1, by = mixture) |>
+  select(mixture, penalty, mean, std_err)
+print(best_per_mixture) 
+range(best_per_mixture$mean)
+
+enet_final_fit <- enet_wf |> 
+  finalize_workflow(best_enet) |> 
+  fit(data = pop)
+
+tidy(enet_final_fit) |> 
+  filter(term %in% pops, estimate != 0)
+```
+
 
 > **Q4.** Compare your (α, λ) and selected POPs with the paper's (α = 0.8, λ = 0.0039, five POPs). How different is the best CV RMSE across α, relative to one SE? Is α identified by these data? What does the ridge part of the penalty do with correlated congeners that the LASSO part does not?
 
+This chooses (0.4, 0.00702) with five POPs. The best CV RMSE across alpha was 0.201. Alpha is not well identified by the data since the RMSE is the same for each alpha value. The ridge part of the penalty shrinks correlated variables together while the LASSO part does not. 
 
 # Starter code
 
