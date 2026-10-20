@@ -1,0 +1,179 @@
+---
+title: "Lecture 08 Exercise — Ridge, LASSO and Elastic Net"
+subtitle: "PubH 6010 Independent Study · Replicating Gibson et al. (2019): NHANES POPs and telomere length"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+Last week you replicated the paper's principal components regression. This week you replicate its **LASSO** and **elastic net**, add the method the paper did not use (**ridge**), and ask the question Lecture 08 keeps coming back to: how much should we trust which variables a penalized model selects?
+
+> Gibson EA, Nunez Y, Abuawad A, Zota AR, Renzetti S, Devick KL, Gennings C, Goldsmith J, Coull BA, Kioumourtzoglou MA. An overview of methods to address distinct research questions on environmental mixtures: an application to persistent organic pollutants and leukocyte telomere length. *Environmental Health.* 2019;18:76. doi:[10.1186/s12940-019-0515-1](https://doi.org/10.1186/s12940-019-0515-1) (open access)
+
+The data are the same `studypop.csv`. The authors' code is public at <https://github.com/lizzyagibson/SHARP.Mixtures.Workshop>. The LASSO and elastic net are in `Supervised/Variable Selection/Lasso_elastic_net.Rmd`, which you will need for Part A.
+
+**Reading before you start.** In the paper: *Variable selection* in Methods (pp. 4–5: lasso, elastic net, group lasso), *Variable selection* in Results (pp. 7–8), **Fig. 3**, Table 2, and the Discussion paragraph on limitations of variable selection (p. 13, "inability to estimate confidence intervals"). In the authors' repo, read `Lasso_elastic_net.Rmd` down to the elastic net section.
+
+As in Weeks 6–7, the modeling code uses **tidymodels** instead of the slides' caret/glmnet:
+
+| slides | here |
+|---|---|
+| `glmnet(x, y, alpha = 1)` | `linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet")` |
+| `alpha = 0` (ridge), `0 < alpha < 1` (elastic net) | `mixture = 0`, `mixture = tune()` |
+| `cv.glmnet(x, y)`, `lambda.min` | `tune_grid()` over a `penalty` grid, `select_best()` |
+| `lambda.1se` | `select_by_one_std_err(res, desc(penalty))` (larger λ = simpler model) |
+| `plot(glmnet_fit)` (coefficient paths) | `extract_fit_engine(fit) |> tidy()` and `ggplot()` |
+| scaling the predictors | `step_normalize()` in the recipe |
+
+**Two things to know about glmnet in tidymodels.**
+
+1. `penalty` is λ, and `mixture` is glmnet's α (1 = LASSO, 0 = ridge).
+2. To leave the covariates **unpenalized**, as the paper does, pass glmnet's `penalty.factor` through `set_engine("glmnet", penalty.factor = pf)`. Here `pf` is 1 for each POP and 0 for each covariate, in the **column order glmnet sees after the recipe**. `step_dummy()` adds its columns at the end, so build `pf` from the baked column names (starter code), not by counting.
+
+*Tidy Modeling with R* (<https://www.tmwr.org>) covers regularized regression with glmnet in chapters 12–13.
+
+**Install once:** `install.packages(c("tidymodels", "glmnet"))`. No Bioconductor packages this week.
+
+# Data
+
+`studypop.csv`: 1,330 rows × 33 columns. The data table and variable names are in the Week 7 handout. The column names you need are in the starter code. The 18 POPs are log-transformed once, in the data step. The outcome is `log_ltl = log(telomean)`. The covariates are the 6 cell-count variables, `age_cent`, `age_sq`, `bmi_cat3`, `edu_cat`, `race_cat`, `male` and `ln_lbxcot`. **Unlike the Table 1 PCR, the authors' LASSO includes cotinine.**
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — Replicate the paper's LASSO
+
+1. Build the analytic sample as last week (n = 1,003), with the POPs logged and the POP columns first.
+2. Follow the authors' code: `x <- model.matrix(log_ltl ~ ., data = pop)[, -1]`, a `penalty.factor` that is 1 for POPs and 0 otherwise, then `set.seed(2)`, `cv.glmnet(x, y, alpha = 1, penalty.factor = pf, type.measure = "mse")`, and refit `glmnet()` at `lambda.min`. Print λ and the non-zero POP coefficients.
+3. Do it again after running `RNGkind(sample.kind = "Rounding")` before `set.seed(2)`. Afterwards, restore the default with `RNGkind(sample.kind = "Rejection")`.
+
+> **Q1.** Do you reproduce the paper's λ = 0.0034 and its four selected POPs (pp. 7–8)? Which run matches, and why does `set.seed(2)` alone not reproduce a 2019 analysis? (Look up what changed in R 3.6.0.) Compare your coefficients with the paper's. The paper says pncdf's β of 0.02 means "a one standard deviation increase … is associated with a 0.02 unit increase in log-LTL." glmnet reports coefficients on the scale of `x`. What scale is that, and is the paper's sentence right?
+
+## Part B — The same LASSO in tidymodels (slides 17–19, 25–28)
+
+4. Write a recipe: `step_dummy(all_nominal_predictors())` then `step_normalize(all_numeric_predictors())`. Build `pf_tm` from the baked column names. Use `linear_reg(penalty = tune(), mixture = 1) |> set_engine("glmnet", penalty.factor = pf_tm)`.
+5. After `set.seed(1234)`, create `vfold_cv(pop, v = 10)`. Tune over `grid_regular(penalty(range = c(-4, -1)), levels = 60)` (λ from 10⁻⁴ to 0.1). Get λ_min with `select_best()` and λ_1SE with `select_by_one_std_err(..., desc(penalty))`.
+6. Plot CV RMSE ± 1 SE against log(λ) (slide 28). Add a dashed line at the CV RMSE of a **covariates-only** linear model (no POPs) on the same folds.
+7. Fit at λ_min and at λ_1SE, and list the non-zero POP coefficients. Plot the 18 POP coefficient paths (slide 18).
+
+> **Q2.** Compare λ_min and the selected POPs with Part A. Your coefficients are now per SD of log POP. Does pre-standardizing change *which* POPs are selected, or only the units? How many POPs survive the 1-SE rule (slide 27), and what does that model reduce to? How much do the 18 POPs improve CV RMSE over the covariates-only model, relative to one SE? What does that say about LASSO here as a *prediction* tool versus a *screening* tool?
+
+## Part C — Ridge (slides 9–14, 22–23)
+
+8. Repeat Part B with `mixture = 0` and `penalty(range = c(-3, 1))`. Fit at the CV-best λ, list the 18 coefficients, and plot the paths.
+
+> **Q3.** How does ridge's best CV RMSE compare with LASSO's? Does ridge set any POP coefficient to zero, and why not (slide 22)? Which POPs get the largest ridge coefficients, and which POP does ridge weight that LASSO dropped? (Check its correlations with the LASSO-selected POPs.) Some ridge coefficients are negative. Should you interpret them? Why is ridge's λ on a different scale from LASSO's?
+
+## Part D — Elastic net (slide 36)
+
+**What elastic net is.** The lecture names elastic net (slide 36) but doesn't cover it. It combines the ridge and LASSO penalties in one criterion:
+
+$$\sum_{i=1}^n \Big(y_i - \beta_0 - \sum_{j=1}^p \beta_j x_{ij}\Big)^2 + \lambda \Big[\alpha \sum_{j=1}^p |\beta_j| + \tfrac{1-\alpha}{2} \sum_{j=1}^p \beta_j^2\Big]$$
+
+λ sets the overall amount of shrinkage, as before, and α (`mixture` in tidymodels) sets the mix: α = 1 is LASSO, α = 0 is ridge, and values in between use both. Because the LASSO part is still there, elastic net can set coefficients exactly to zero and so still does variable selection. The ridge part fixes LASSO's main weakness with correlated predictors. Given a group of highly correlated exposures, LASSO tends to keep one, somewhat arbitrarily, and drop the rest. Ridge shrinks their coefficients toward each other. Elastic net therefore tends to keep or drop correlated predictors *together* (the "grouping effect"), which suits exposure mixtures like these POPs. In the picture on slide 22, the elastic net constraint region lies between the diamond and the circle. It still has corners on the axes, so exact zeros are possible, but its edges are curved. The price is a second tuning parameter: α and λ are chosen jointly by CV over a grid. (Zou H, Hastie T. *J R Stat Soc B.* 2005;67:301–320; ESL §3.4.3; Gibson et al. p. 5.)
+
+9. Tune `penalty` and `mixture` together: `expand_grid(penalty = 10^seq(-4, -1, length.out = 40), mixture = seq(0.1, 1, by = 0.1))`, on the **same folds**.
+10. Report the best (α, λ). Then, for each α, report the best CV RMSE and its SE (`slice_min(mean, n = 1, by = mixture)`). List the POPs the best elastic net selects.
+
+> **Q4.** Compare your (α, λ) and selected POPs with the paper's (α = 0.8, λ = 0.0039, five POPs). How different is the best CV RMSE across α, relative to one SE? Is α identified by these data? What does the ridge part of the penalty do with correlated congeners that the LASSO part does not?
+
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(glmnet)
+tidymodels_prefer()
+
+pops <- c("lbx074la", "lbx099la", "lbx118la", "lbx138la", "lbx153la", "lbx170la",
+          "lbx180la", "lbx187la", "lbx194la", "lbxpcbla", "lbxhxcla",
+          "lbxd03la", "lbxd05la", "lbxd07la",
+          "lbxf03la", "lbxf04la", "lbxf05la", "lbxf08la")
+covars <- c("lbxwbcsi", "lbxlypct", "lbxmopct", "lbxnepct", "lbxeopct", "lbxbapct",
+            "age_cent", "age_sq", "bmi_cat3", "edu_cat", "race_cat", "male", "ln_lbxcot")
+
+pop <- read_csv("studypop.csv", show_col_types = FALSE) |>
+  rename_with(tolower) |>
+  drop_na(telomean, all_of(pops), all_of(covars)) |>
+  mutate(log_ltl = log(telomean),
+         across(all_of(pops), log),
+         across(c(bmi_cat3, edu_cat, race_cat, male), factor)) |>
+  select(log_ltl, all_of(pops), all_of(covars))
+
+# Part A: the authors' approach
+x  <- model.matrix(log_ltl ~ ., data = pop)[, -1]
+y  <- pop$log_ltl
+pf <- as.numeric(colnames(x) %in% pops)
+# RNGkind(sample.kind = "Rounding")   # step 3
+set.seed(2)
+cv_paper <- cv.glmnet(x, y, alpha = 1, penalty.factor = pf, type.measure = "mse")
+cv_paper$lambda.min
+coef(glmnet(x, y, alpha = 1, penalty.factor = pf, lambda = cv_paper$lambda.min))[pops, 1]
+
+# Part B: tidymodels
+rec <- recipe(log_ltl ~ ., data = pop) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+baked_names <- rec |> prep() |> bake(new_data = NULL) |> select(-log_ltl) |> names()
+pf_tm <- as.numeric(baked_names %in% pops)
+
+lasso_wf <- workflow() |>
+  add_recipe(rec) |>
+  add_model(linear_reg(penalty = tune(), mixture = 1) |>
+              set_engine("glmnet", penalty.factor = pf_tm))
+
+set.seed(1234)
+folds <- vfold_cv(pop, v = 10)
+lasso_res <- tune_grid(lasso_wf, resamples = folds,
+                       grid = grid_regular(penalty(range = c(-4, -1)), levels = 60),
+                       metrics = metric_set(rmse, rsq))
+best_min <- select_best(lasso_res, metric = "rmse")
+best_1se <- select_by_one_std_err(lasso_res, desc(penalty), metric = "rmse")
+
+lasso_fit <- lasso_wf |> finalize_workflow(best_min) |> fit(data = pop)
+tidy(lasso_fit) |> filter(term %in% pops, estimate != 0)
+
+# coefficient paths: the fitted glmnet object holds the whole path
+extract_fit_engine(lasso_fit) |>
+  tidy(return_zeros = TRUE) |>
+  filter(term %in% pops) |>
+  ggplot(aes(log(lambda), estimate, colour = term)) + geom_line()
+
+# covariates-only comparison on the same folds
+cov_only <- workflow() |>
+  add_recipe(recipe(log_ltl ~ ., data = pop |> select(-all_of(pops)))) |>
+  add_model(linear_reg()) |>
+  fit_resamples(folds) |>
+  collect_metrics()
+
+# Part C: ridge -- swap the model
+ridge_wf <- lasso_wf |>
+  update_model(linear_reg(penalty = tune(), mixture = ____) |>
+                 set_engine("glmnet", penalty.factor = pf_tm))
+
+# Part D: elastic net -- tune both
+enet_wf <- lasso_wf |>
+  update_model(linear_reg(penalty = tune(), mixture = tune()) |>
+                 set_engine("glmnet", penalty.factor = pf_tm))
+
+
+```
+
+# Check your numbers
+
+- Part A: one of your two runs gives λ = 0.0034 and four POPs, matching the paper. The other gives λ ≈ 0.0031.
+- Part B: λ_min ≈ 0.003. The covariates-only CV RMSE is about 0.203, and the best LASSO about 0.201.
+- Part D: the best CV RMSE is about 0.2014 at every α.
+- Runtime: under a minute for Parts A–D.
