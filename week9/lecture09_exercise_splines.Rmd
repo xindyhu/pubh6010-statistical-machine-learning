@@ -1,0 +1,204 @@
+---
+title: "Lecture 09 Exercise — Polynomials, Step Functions and Splines"
+subtitle: "PubH 6010 Independent Study · Replicating Bhaskaran et al. (2013): London temperature, ozone and daily mortality"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+Lecture 09 moves beyond linearity with **polynomials**, **step functions** and **regression splines**. This week's paper uses all three, in the setting closest to your project: daily deaths, weather and air pollution in a time series.
+
+> Bhaskaran K, Gasparrini A, Hajat S, Smeeth L, Armstrong B. Time series regression studies in environmental epidemiology. *International Journal of Epidemiology.* 2013;42(4):1187–1195. doi:[10.1093/ije/dyt092](https://doi.org/10.1093/ije/dyt092) (open access)
+
+The data and the authors' R code are public at <https://github.com/gasparrini/2013_bhaskaran_IJE_Codedata>. `Rcode.R` in that repository is the reference for Part A.
+
+**Reading before you start.** Read the paper up to and including *Exposure–outcome associations and confounding* (pp. 1187–1191) and **Figure 2**. Skim the lag section. You will not need distributed lag models this week, but read it anyway: they are the standard tool in the extreme-weather literature.
+
+**What's new this week: a count outcome.** The slides use `lm()` on a continuous outcome. Daily deaths are counts, so the paper fits a **Poisson regression**:
+
+$$\log E[Y_t] = \beta_0 + f(\text{time}_t) + g(\text{temperature}_t) + \beta_{O_3}\,\text{ozone}_t .$$
+
+Every basis expansion from the lecture plugs into $f$ and $g$ exactly as it would in `lm()`. The only differences:
+
+- **The model is linear on the log scale.** $e^{\beta}$ is a **rate ratio (RR)**. An ozone RR of 1.007 per 10 µg/m³ means deaths are 0.7% higher on a day with 10 µg/m³ more ozone, holding the other terms fixed.
+- **Quasi-Poisson.** The paper uses `family = quasipoisson`. It gives the same estimates as Poisson, with SEs scaled up for overdispersion (variance > mean).
+- **Two tools.** For estimates and CIs (Parts A–C, E) you use `glm()` directly, as the authors do. For cross-validation (Part D) you use tidymodels `poisson_reg()`. It cannot fit quasi-Poisson, but CV only uses the predicted counts, which are identical.
+
+| slides | here |
+|---|---|
+| `lm(y ~ x + I(x^2) + I(x^3))` | `glm(numdeaths ~ ... + poly(temperature, 3), family = quasipoisson)` |
+| `lm(y ~ cut(x, 4))` | `cut(temperature, 4)` inside the `glm()` formula |
+| `bs(x, knots = 15, degree = 1)`, `bs(x, df = k)`, `ns(x, df = k)` | the same functions, inside the `glm()` formula |
+| `train(..., method = "lm", trControl = trainControl("cv", 10))` | `poisson_reg() |> set_engine("glm")`, `vfold_cv(v = 10)`, `tune_grid()` |
+| choosing df by CV with one model per df (slides 41–44) | `step_ns(temperature, deg_free = tune())` with `grid = tibble(deg_free = 1:10)` |
+
+**Install once:** `install.packages(c("tidymodels", "poissonreg", "haven", "tsModel"))`. `splines` ships with R.
+
+# Data
+
+`londondataset2002_2006.dta` (Stata format, read with `haven::read_dta()`): 1,826 days, 1 January 2002 – 31 December 2006, Greater London, no missing values.
+
+| variable | description |
+|---|---|
+| `date` | calendar date |
+| `numdeaths` | all-cause deaths that day |
+| `ozone` | daily mean ozone, µg/m³ |
+| `temperature` | daily mean temperature, °C |
+| `relative_humidity` | daily mean relative humidity, % (not used) |
+
+The starter code adds `time` (1, …, 1826), `ozone10 = ozone / 10`, `month` and `year`. Look at the hottest days in the data before you start (`slice_max(london, temperature, n = 8)`). You will see them again in every part.
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — Replicate the paper (slides 24–25, 30, 35–36)
+
+1. Fit the paper's three models for season and long-term trend (no exposure yet): month-within-year strata (`month / year`), Fourier terms plus a linear trend, and a cubic B-spline of time with df = 35. Reproduce **Figure 2** as one `ggplot()` with three facets.
+2. Fit the three ozone models in the paper: ozone alone; plus the time spline; plus temperature in deciles. Report each ozone RR per 10 µg/m³ with its 95% CI.
+
+> **Q1.** Do your RRs match the paper's text (p. 1190)? Each of the three seasonality models is a basis-function model (slide 30). Name the basis each one uses, and say what pattern each can and cannot follow (look at winter 2002/03 and at August 2003). Why does the ozone RR flip from below 1 to above 1 when the time spline is added? What kind of function of temperature is "deciles" in Lecture 09's terms?
+
+## Part B — Polynomials and step functions for temperature (slides 16–28)
+
+From here on, keep the paper's `bs(time, df = 35)` in every model, and leave ozone out until Part E.
+
+3. Fit temperature as linear, as polynomials of degree 2, 3 and 4, as the paper's deciles, and as 4 equal-width bins (`cut(temperature, 4)`, slide 26).
+4. Plot each fitted temperature–mortality curve with `temp_curve()` (starter code): RR vs the median temperature, with a 95% CI. Use one facet per model and add a rug of the observed temperatures. Tabulate the RR at 0, 5, 18, 22, 25 and 28 °C.
+
+> **Q2.** Where do the models agree, and where do they disagree? How many days are above 25 °C, and when were they? What happens to the RR at 28 °C and its CI as the polynomial degree increases, and why (slide 22)? What does the paper's top temperature decile assume about a 19 °C day vs the hottest day of August 2003? Is that acceptable for *controlling* for temperature, and is it acceptable for *describing* heat risk?
+
+## Part C — Regression splines (slides 29–39)
+
+5. Choose one knot for temperature and justify it from your Part B plots. (A heat threshold is the usual idea.) Fit with that knot: a **linear spline** (`bs(..., degree = 1)`), a **cubic spline** (`bs(..., degree = 3)`) and a **natural cubic spline** (`ns()`). Then fit a cubic spline with three knots of your choice.
+6. Plot the four curves with CIs as in Part B. For the linear spline, refit it as `temperature + pmax(temperature - knot, 0)` (the truncated power basis, slide 33) and report the % change in deaths per °C below and above the knot, with CIs.
+
+> **Q3.** Interpret the linear spline in one sentence a public health department could use. Compare the cubic and natural splines at the hot end: their RR at 28 °C, their CI widths, and why they differ (slide 46). How many df does each temperature term use? Which model would you report for heat-related mortality, and why? The same-day curve shows almost no cold effect. Does that mean cold is harmless in London? (Hint: the paper's lag section.)
+
+## Part D — Choosing flexibility by cross-validation (slides 40–47)
+
+7. Set `set.seed(1234)` and create `vfold_cv(london, v = 10)`. With tidymodels, tune the df of temperature for a natural spline (1–10), a cubic B-spline (3–10) and a polynomial (degree 1–5). Keep `step_bs(time, deg_free = 35)` in every recipe.
+8. Plot CV RMSE (± 1 SE) against df for the three families on one plot (slide 44). Add a horizontal line for the time-only model on the same folds. Report the best df and the 1-SE choice (`select_by_one_std_err()`).
+9. Refit the CV-best B-spline and natural spline with `glm()` and plot both curves with CIs on one plot (slide 47).
+
+> **Note on the folds.** We use **random** 10-fold CV, as the slides do. For daily time series this is not correct practice. Deaths and temperature on adjacent days are correlated, so every held-out day has its neighbours in the training folds. CV error is therefore too optimistic, and it rewards flexibility that *interpolates* between neighbouring days. Current practice is to hold out whole blocks of time: `group_vfold_cv(london, group = year)` leaves out one calendar year per fold, and `rolling_origin()` always trains on the past and tests on the future. You will see the cost of random folds directly in Part E. Keep it in mind for your own waterborne-disease data, which will be daily or weekly too.
+
+> **Q4.** How much does CV RMSE improve from linear to the best model, and how big are the differences among df ≥ 4 relative to one SE? What does CV tell you about whether the curve is non-linear, and what does it tell you about *how* non-linear? Where do the selected B-spline and natural spline differ, and why? You will see a warning about "x values beyond boundary knots" during CV. Which held-out days trigger it, and why does that matter for predicting extremes?
+
+## Part E — Prediction vs confounding control
+
+The paper's question is not "predict deaths". It is "estimate the ozone RR". For that question, the time spline and the temperature terms are **confounder adjustment**.
+
+10. Refit the ozone model across a grid: time-spline df per year ∈ {1, 2, 4, 7, 10, 14, 20} (i.e. `bs(time, df = 5 * k)`), crossed with four temperature controls: the paper's deciles, your Part C linear spline, `ns(temperature, df = 3)` and `ns(temperature, df = 8)`. Plot the ozone RR and CI against df per year, coloured by temperature control.
+11. Tabulate mean ozone and mean deaths by temperature band (≤ 15 °C, 15 °C to the top-decile cut-off, the cut-off to 22 °C, and > 22 °C).
+12. Using the Part D folds, let CV choose the time-spline df per year from the same grid (with ozone and `ns(temperature, df = 8)` in the model).
+
+> **Q5.** Which choice moves the ozone RR more: the df for time, or how temperature is modelled? Using step 11, explain why the paper's decile adjustment gives a higher ozone RR than the flexible temperature models. What df per year does CV choose for time, compared with the paper's 7? Why is that not a good reason to use it? (Use the note in Part D, and look up Peng, Dominici & Louis 2006, *JRSS-A* 169:179–203.) In two or three sentences: for your own project, when would you tune flexibility by CV, and when would you fix it in advance?
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(poissonreg)
+library(haven)
+library(splines)
+tidymodels_prefer()
+
+london <- read_dta("londondataset2002_2006.dta") |>
+  mutate(date      = as.Date(date),
+         time      = row_number(),
+         numdeaths = as.integer(numdeaths),
+         ozone10   = ozone / 10,
+         month     = factor(month(date)),
+         year      = factor(year(date)))
+
+# ---- helper: temperature-mortality curve from a glm() fit -------------------
+# RR relative to `ref` (default: median temperature), with pointwise 95% CI.
+# Works for poly(), cut(), bs(), ns() written INSIDE the glm() formula.
+temp_curve <- function(fit, data, ref = median(data$temperature),
+                       grid = seq(min(data$temperature), max(data$temperature), length.out = 200)) {
+  nd  <- tibble(temperature = c(ref, grid), time = 1, ozone10 = 0)
+  tt  <- delete.response(terms(fit))
+  X   <- model.matrix(tt, model.frame(tt, nd, xlev = fit$xlevels))
+  b   <- coef(fit)
+  ok  <- !is.na(b)
+  Xd  <- sweep(X[-1, ok, drop = FALSE], 2, X[1, ok])
+  est <- drop(Xd %*% b[ok])
+  se  <- sqrt(rowSums((Xd %*% vcov(fit)) * Xd))
+  tibble(temperature = grid, rr = exp(est),
+         lo = exp(est - 1.96 * se), hi = exp(est + 1.96 * se))
+}
+
+# ---- Part A -----------------------------------------------------------------
+m_strata  <- glm(numdeaths ~ month / year, data = london, family = quasipoisson)
+fourier   <- tsModel::harmonic(london$time, nfreq = 4, period = 365.25)
+m_fourier <- glm(numdeaths ~ fourier + time, data = london, family = quasipoisson)
+m_spline  <- glm(numdeaths ~ bs(time, df = 35), data = london, family = quasipoisson)
+# Figure 2: add fitted(m_...) as columns, pivot_longer(), facet_wrap()
+
+dec_breaks <- quantile(london$temperature, probs = 0:10 / 10)
+m_temp <- glm(numdeaths ~ ozone10 + bs(time, df = 35) +
+                cut(temperature, dec_breaks, include.lowest = TRUE),
+              data = london, family = quasipoisson)
+# RR and CI: exp(coef) and exp(coef +/- 1.96 * SE) for "ozone10"
+
+# ---- Parts B-C: one function, many temperature terms -------------------------
+fit_temp <- function(term) {
+  glm(as.formula(paste("numdeaths ~ bs(time, df = 35) +", term)),
+      data = london, family = quasipoisson)
+}
+partB_terms <- c("Linear" = "temperature",
+                 "Polynomial, degree 2" = "poly(temperature, 2)",
+                 # ... add the rest
+                 "Step: 4 equal-width bins" = "cut(temperature, 4)")
+partB_curves <- map(partB_terms, fit_temp) |>
+  imap_dfr(\(fit, nm) temp_curve(fit, london) |> mutate(model = nm))
+# ggplot(partB_curves, aes(temperature, rr)) + geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2) +
+#   geom_line() + facet_wrap(~ model)
+
+# ---- Part D: tidymodels CV ---------------------------------------------------
+pois_mod <- poisson_reg() |> set_engine("glm")
+base_rec <- recipe(numdeaths ~ time + temperature, data = london) |>
+  step_bs(time, deg_free = 35, degree = 3)
+ns_rec   <- base_rec |> step_ns(temperature, deg_free = tune())
+
+set.seed(1234)
+folds  <- vfold_cv(london, v = 10)
+ns_res <- tune_grid(workflow(ns_rec, pois_mod), resamples = folds,
+                    grid = tibble(deg_free = 1:10), metrics = metric_set(rmse))
+collect_metrics(ns_res)
+select_best(ns_res, metric = "rmse")
+select_by_one_std_err(ns_res, deg_free, metric = "rmse")
+# B-spline: step_bs(temperature, deg_free = tune(), degree = 3), grid 3:10
+# polynomial: step_poly(temperature, degree = tune()), grid tibble(degree = 1:5)
+# time-only floor: workflow(recipe(numdeaths ~ time, london) |> step_bs(time, deg_free = 35), pois_mod) |>
+#   fit_resamples(folds) |> collect_metrics()
+
+# ---- Part E -------------------------------------------------------------------
+temp_controls <- c("Deciles (paper)" = "cut(temperature, dec_breaks, include.lowest = TRUE)",
+                   "Natural spline df = 8" = "ns(temperature, df = 8)")   # add yours
+ozone_grid <- expand_grid(df_per_year = c(1, 2, 4, 7, 10, 14, 20),
+                          control = names(temp_controls)) |>
+  mutate(fit = map2(df_per_year, control, \(k, ctl)
+    glm(as.formula(sprintf("numdeaths ~ ozone10 + bs(time, df = %d) + %s", 5 * k, temp_controls[[ctl]])),
+        data = london, family = quasipoisson)))
+# pull the ozone10 RR and CI from each fit, then plot
+```
+
+# Check your numbers
+
+- **Part A:** the ozone RRs are 0.991, 1.007 and 1.003, exactly as in the paper.
+- **Part B:** the 4 hottest days are all in 6–11 August 2003. The degree-4 polynomial gives RR ≈ 1.8 at 28 °C.
+- **Part D:** CV RMSE is ≈ 14.5 deaths/day for linear temperature, ≈ 13.7 at best, and ≈ 14.7 for the time-only model.
+- **Runtime:** under 2 minutes for everything. You will see harmless `bs()` warnings about boundary knots in Part D; Q4 asks about them.
