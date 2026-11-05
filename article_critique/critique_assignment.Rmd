@@ -1,0 +1,51 @@
+---
+title: "Article Critique — Climate-Informed Early Warning for Diarrhoeal Disease"
+subtitle: "PubH 6010 Independent Study, Fall 2026 · Due Friday, December 4, 2026"
+output:
+  html_document:
+    toc: false
+    df_print: paged
+---
+## Purpose
+
+Your literature review covered studies that *estimate the effect* of extreme weather on waterborne disease. This paper tries to *predict* disease from climate. Your task is to judge whether its design supports its claims.
+
+## Reading
+
+**Required**
+
+- Cruz Cano R, He H, Aryal S, et al. A prototype early warning system for diarrhoeal disease to combat health threats of climate change in the Asia-Pacific region. *Environ Res Lett.* 2024;19(11):114094. doi:10.1088/1748-9326/ad8366 (PDF in this folder)
+- Pollett S, Johansson MA, Reich NG, et al. Recommended reporting items for epidemic forecasting and prediction research: the EPIFORGE 2020 guidelines. *PLoS Med.* 2021;18(10):e1003793. doi:10.1371/journal.pmed.1003793. Use the checklist as a reference while you read. (PDF in this folder)
+
+## Format
+
+**1,500–2,000 words**, not counting references. Write an essay with the five headings below. The questions guide what to cover; you don't need to answer each one as a separate item. Cite the paper's tables and figures, and use numbers from them where you can.
+
+Open with a summary of the paper in 150 words or fewer.
+
+### 1. The prediction task
+
+What exactly do the models predict: outcome, unit, time step and **lead time**? The paper promises warnings "weeks to months" ahead. Using Section 2.2 and Figures 1–2, work out the lead time Models 1–4 actually have. Which of their inputs would be available on the day a forecast is issued?
+
+### 2. Validation
+
+How were the Table 2 results produced? The predictors include lagged disease rates. What can the training data "know" about a test observation, and how does that affect Table 2? Then look at the 12-month holdout in Section 3.2: which model did it test, and does that fit the paper's argument that recent surveillance data may be unavailable? Propose a validation design that matches how an early warning system would be used.
+
+### 3. Baselines and metrics
+
+Compare Model 2 (seasonal history only) with Model 3 (adding weather) for the best method in each country. Does the evidence support the claim that weather improves prediction? Explain what the correlation coefficient and RMSE each miss. Then put Table 3's accuracy figures in context: what would a trivial rule score, and what does 20% accuracy in Taiwan's high-rate category mean for a warning system?
+
+### 4. Model inputs and specification
+
+How is weather represented: aggregation, lags, extremes? Could these models detect a rise in disease after a single flood or cyclone? Check whether references 35–37 support the 4-step lag. Using Lecture 11, comment on which random forest and boosting hyperparameters were tuned and which were not.
+
+### 5. Reporting and overall judgment
+
+Name three EPIFORGE items the paper does not meet and say why each one matters here. Name the paper's main strengths. What can a reader conclude from this study, and what can't they?
+
+## What a strong critique does
+
+- Separates what the authors claim from what their design can show.
+- Ties each criticism to its consequence, using the paper's own numbers.
+- Credits real strengths.
+- Says, where it matters, what a better design would look like.

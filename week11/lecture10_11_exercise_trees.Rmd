@@ -1,0 +1,230 @@
+---
+title: "Lectures 10–11 Exercise — Trees, Bagging, Random Forests and Boosting"
+subtitle: "PubH 6010 Independent Study · Replicating Lombard et al. (2021): machine-learning models of arsenic in US private wells"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+Lectures 10 and 11 cover all of the tree-based methods: **classification trees** with cost-complexity pruning, **bagging**, **random forests** and **boosting**, plus **variable importance** and **partial dependence plots**. This week's paper uses boosting and a random forest to build a national map of arsenic in private wells. It is a direct example of ML used for **exposure assessment** in a health study.
+
+> Lombard MA, Scannell Bryan M, Jones DK, Bulka C, Bradley PM, Backer LC, Focazio MJ, Silverman DT, Toccalino P, Argos M, Gribble MO, Ayotte JD. Machine learning models of arsenic in private wells throughout the conterminous United States as a tool for exposure assessment in human health studies. *Environmental Science & Technology.* 2021;55(8):5012–5023. doi:[10.1021/acs.est.0c05239](https://doi.org/10.1021/acs.est.0c05239)
+
+The data are a USGS data release: Lombard MA (2021), doi:[10.5066/P90RBJXS](https://doi.org/10.5066/P90RBJXS).
+
+**Reading before you start.**
+
+- Read the Introduction and Methods, Table 1 and the variable-importance figure (Figure 2).
+- Skim the maps. The Discussion of how the maps should and should not be used in health studies is short and worth reading closely.
+
+**The paper's four models.**
+
+| model | outcome | method | the paper's tuned settings |
+|---|---|---|---|
+| BRT1 / BRT5 / BRT10 | arsenic > 1, > 5, > 10 µg/L (binary) | boosted regression trees (`gbm`) | BRT10: 4,500 trees, interaction depth 6, shrinkage 0.01, min. 10 obs. per node |
+| RFC | ≤ 5, > 5 to ≤ 10, > 10 µg/L (3 classes) | random forest classification | 500 trees, m = 20 |
+
+We focus on **> 10 µg/L**, the EPA maximum contaminant level (MCL) for public water systems. Private wells are not covered by the MCL. The paper selected tuning settings by 10-fold CV with the 1-SE rule, as in the slides, and evaluated on a held-out 30% of wells. The data file records which wells were in the paper's training and test sets, so you can use **exactly the paper's split**.
+
+**Code: slides vs here.** As in previous weeks, we use tidymodels where the slides use `caret`. For the replication in Part A we call `gbm()` directly, because that is what the paper and slides 13–17 of Lecture 11 use.
+
+| slides | here |
+|---|---|
+| `rpart(..., method = "class", cp = 0)`, `printcp()`, `plotcp()`, `prune()` | the same (Part B), plus `decision_tree(cost_complexity = tune()) |> set_engine("rpart")` |
+| `randomForest(..., mtry = 8)`, `train(method = "rf")` | `rand_forest(mtry = , trees = , min_n = 1) |> set_engine("ranger")` |
+| `gbm(..., distribution = "bernoulli")` | the same (Part A) |
+| `train(method = "gbm", tuneGrid = expand.grid(...))` | `boost_tree(trees = tune(), tree_depth = tune(), learn_rate = tune()) |> set_engine("xgboost")` |
+| `varImpPlot()`, `summary(gbm_fit)`, `plot(gbm_fit, i = "x")` | the same for gbm; `importance = "permutation"` in ranger; `pdp_curve()` (starter code) |
+| `trainControl("cv", number = 10)` | `vfold_cv(train, v = 5, strata = as10)`. We use 5 folds to keep the boosting grid under 5 minutes |
+
+**Install once:** `install.packages(c("tidymodels", "gbm", "rpart.plot", "ranger", "xgboost", "probably"))`. `rpart` ships with R.
+
+# Data
+
+`AsModelInput.csv`: 20,450 private wells sampled 1970–2013 across the conterminous US, × 93 columns. Well locations are not included. `Model_input_definitions.csv` defines every column, and `Model_input_sources.csv` gives the source datasets.
+
+| columns | what they are |
+|---|---|
+| `bas1`, `bas5`, `bas10` | 1 if arsenic > 1, > 5, > 10 µg/L (`NA` where a well's reporting limit is too high to classify it) |
+| `As3Cat` | `C1` ≤ 5, `C2` > 5 to ≤ 10, `C3` ≥ 10 µg/L |
+| `spl1`, `spl5`, `spl10`, `spl3cat` | `TRUE` = the paper's training set, `FALSE` = test set, for each model |
+| 85 predictors | climate and hydrology (`DMppt8110` precipitation, `PRMS8110Re` recharge, `BFI` baseflow index, `LP*` hydrologic position); soil C-horizon geochemistry (`as_c`, `se_c`, `sb_c`, `p_c`, …); and 68 binary geology, surficial-material and ecoregion indicators |
+
+Three things in the definitions file are wrong or inconsistent. The starter code accounts for them:
+
+- `DMppt8110` is listed in inches. The values (65 to 3,098) are **millimetres** per year.
+- The descriptions of `p_c` and `orgc_c` are swapped. `p_c` is phosphorus (mg/kg), and `orgc_c` is organic carbon (weight %).
+- C3 is "≥ 10" but `bas10` is "> 10", so wells at exactly 10 µg/L are C3 with `bas10 = 0`.
+
+The starter code drops the 27 wells with a missing predictor and creates `as10`, a factor version of `bas10` with `"yes"` as the first level (yardstick treats the first level as the event).
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — Replicate the boosted model for > 10 µg/L (L11 slides 4–7, 13–15)
+
+1. Using the paper's split (`spl10`), report the number of training and test wells and the proportion with arsenic > 10 µg/L in each.
+2. Fit the paper's BRT10 with `gbm()` (settings in the table above, `bag.fraction = 0.5`, `set.seed(1234)`). Compute test-set accuracy, sensitivity, specificity, AUC and kappa at the 0.5 cutoff, and the same on the training set, with `test_metrics()`. Put them next to the paper's Table 1.
+3. Two baselines: the accuracy of predicting "no" for every well, and a main-effects logistic regression (`logistic_reg()`) on all 85 predictors.
+
+> **Q1.** Do your numbers match Table 1? Give two reasons small differences could remain. Why is training performance so much better than test performance, and why is this a bigger concern for boosting than for a random forest (slide 7)? Compare the model's 91% accuracy with the "always no" baseline. Which of the five metrics would you lead with in an abstract, and why? What does `interaction.depth = 6` mean in `gbm`?
+
+## Part B — A single classification tree (L10 slides 25–37)
+
+4. Grow the maximal tree with `rpart(..., cp = 0, xval = 10)` (slide 31). Use `plotcp()` and the `cptable` to find the α with the smallest CV error and the α chosen by the 1-SE rule.
+5. Tune `cost_complexity` with tidymodels on the 5 folds, with both `accuracy` and `roc_auc` as metrics. Plot both against α. Report the test metrics of the tree chosen by the 1-SE rule on accuracy and of the tree with the best CV AUC.
+6. Prune to a small tree (`cp = 0.0065`, 3 splits) and draw it with `rpart.plot()`. Then grow the same small tree on three bootstrap resamples of the training wells (`slice_sample(train, prop = 1, replace = TRUE)`) and record the first few splits of each.
+
+> **Q2.** Describe the small tree in two sentences a state health department could use. Why do accuracy and AUC choose such different trees (think about the 89% baseline and slide 30)? How does the best single tree compare with the boosted model and with logistic regression? What did the bootstrap resamples show, and how does it connect to the motivation for bagging (slides 37–40)? Hint: compute the correlation between `as_c` and `sb_c`.
+
+## Part C — Bagging and random forests (L10 slides 38–53)
+
+7. With `rf_fit()` (starter code), fit bagging (m = 85) and a random forest (m = 9 ≈ √85) for B ∈ {10, 25, 50, 100, 250, 500, 1000}. Plot the OOB error against B for both (slide 44).
+8. With B = 500, fit m ∈ {1, 3, 6, 9, 15, 20, 30, 45, 60, 85}. Tabulate the OOB Brier score and OOB AUC against m. Report the test metrics for bagging, m = 9 and the paper's m = 20.
+9. Replicate the paper's 3-class RFC on its split (`spl3cat`, m = 20, 500 trees). Report accuracy on the training data, OOB accuracy, test accuracy and test kappa, and the accuracy of always predicting C1. Make the test confusion matrix and compute the precision and recall of each class.
+
+> **Q3.** How many trees are enough, and can too many trees hurt here (slide 51)? Which m is best, and why does bagging do worse than a random forest on these predictors (slide 50)? The paper reports 100% training accuracy for the RFC. Is that evidence of overfitting, and which of your numbers is the honest estimate of performance on new wells? Why is C2 (5–10 µg/L) so hard to predict, and why does that matter for a health study? Finally, compare your per-class precision and recall with the paper's "user's" and "producer's" accuracy (look up the definitions). What do you notice?
+
+## Part D — Tuning boosted trees with tidymodels (L11 slides 7, 18–21)
+
+10. Tune `boost_tree()` with the xgboost engine (`min_n = 10`, `sample_size = 0.5`) over trees ∈ {250, 500, 1000, 2000, 3000} × tree_depth ∈ {1, 3, 6} × learn_rate ∈ {0.01, 0.1}, using CV AUC. Plot CV AUC against trees, coloured by depth and faceted by learning rate.
+11. Finalise the best setting with `last_fit()` on the paper's split. Build one table of test metrics for: logistic regression, the best CART, bagging, random forest (m = 20), the paper's gbm, and your tuned xgboost.
+
+> **Q4.** What happens to CV AUC as B grows at ν = 0.1 vs ν = 0.01, and why? What do depth-1 trees (stumps) assume, and what does their gap from depth 6 tell you about interactions in arsenic geochemistry? Is xgboost's `tree_depth = 6` the same as gbm's `interaction.depth = 6`? In your final table, which differences are large and which are within noise? (A rough SE for a test AUC here is 0.008.)
+
+## Part E — Interpretation and use in a health study (L11 slides 8–10)
+
+12. Make one table of variable-importance ranks for gbm relative influence, RF impurity importance and RF permutation importance (m = 20). Compare the total gbm influence of the 17 continuous and the 68 binary predictors.
+13. Draw partial dependence plots for precipitation (`DMppt8110`) from gbm and from the random forest with `pdp_curve()`, on one plot. Overlay the raw proportion of wells > 10 µg/L by precipitation decile.
+14. Using the random forest's **OOB** predicted probabilities (no test data), plot sensitivity, specificity and PPV against the cutoff with `probably::threshold_perf()`. Pick the cutoff that maximises Youden's J. Apply it to the test set and report sensitivity, specificity, PPV and the share of wells flagged.
+
+> **Q5.** Which predictors are important under all three measures, and where do the measures disagree? Why might impurity importance favour continuous variables over rare binary ones? Describe the precipitation partial dependence, and say whether it is a causal effect of precipitation. Is it relevant to your extreme-weather question? (Precipitation here is a 1981–2010 average.) If an epidemiologist used these predictions as the exposure in a study of arsenic and bladder cancer, would you give them the 0.5 class, your Youden class, or the probability, and why? Last, the paper's test set is a random 30% of wells. What would a spatially blocked test set measure that this one does not?
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(gbm)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(xgboost)
+library(probably)
+tidymodels_prefer()
+
+as_raw <- read_csv("AsModelInput.csv")
+outcome_cols <- c("bas1", "bas5", "bas10", "As3Cat", "spl1", "spl5", "spl10", "spl3cat")
+predictors   <- setdiff(names(as_raw), outcome_cols)          # 85 predictors
+
+wells <- as_raw |>
+  filter(if_all(all_of(predictors), \(x) !is.na(x))) |>      # drops 27 wells
+  mutate(as10   = factor(if_else(bas10 == 1, "yes", "no"), levels = c("yes", "no")),
+         As3Cat = factor(As3Cat))
+train <- wells |> filter(spl10)
+test  <- wells |> filter(!spl10)
+f10   <- reformulate(predictors, response = "as10")
+
+# ---- helper: the five Table 1 metrics at a probability cutoff ----------------
+test_metrics <- function(truth, prob_yes, cut = 0.5) {
+  cls <- factor(if_else(prob_yes > cut, "yes", "no"), levels = c("yes", "no"))
+  tibble(accuracy    = accuracy_vec(truth, cls),
+         sensitivity = sensitivity_vec(truth, cls),
+         specificity = specificity_vec(truth, cls),
+         auc         = roc_auc_vec(truth, prob_yes),
+         kappa       = kap_vec(truth, cls))
+}
+
+# ---- Part A ------------------------------------------------------------------
+set.seed(1234)
+gbm10 <- gbm(reformulate(predictors, "bas10"), data = train,   # gbm wants a 0/1 outcome
+             distribution = "bernoulli", n.trees = 4500, interaction.depth = 6,
+             shrinkage = 0.01, n.minobsinnode = 10, bag.fraction = 0.5)   # ~2-4 min
+p_gbm_test <- predict(gbm10, test, n.trees = 4500, type = "response")
+test_metrics(test$as10, p_gbm_test)
+
+logit10 <- logistic_reg() |> fit(f10, data = train)
+p_logit_test <- predict(logit10, test, type = "prob")$.pred_yes
+
+# ---- Part B ------------------------------------------------------------------
+set.seed(1234)
+tree_max <- rpart(f10, data = train, method = "class", parms = list(split = "gini"),
+                  control = rpart.control(minsplit = 20, minbucket = 5, cp = 0, xval = 10))
+printcp(tree_max); plotcp(tree_max)
+
+set.seed(1234)
+folds <- vfold_cv(train, v = 5, strata = as10)            # reuse these folds in Part D
+cart_spec <- decision_tree(cost_complexity = tune(), min_n = 20) |>
+  set_engine("rpart") |> set_mode("classification")
+cart_res <- tune_grid(workflow(f10, cart_spec), resamples = folds,
+                      grid = tibble(cost_complexity = 10^seq(-4, -1.5, by = 0.5)),
+                      metrics = metric_set(accuracy, roc_auc))
+select_by_one_std_err(cart_res, desc(cost_complexity), metric = "accuracy")
+tree_small <- rpart::prune(tree_max, cp = 0.0065)   # rpart::, because another package also has a prune()
+rpart.plot(tree_small, extra = 107)
+
+# ---- Part C ------------------------------------------------------------------
+# min_n = 1 grows full trees, as randomForest() does (slides 41, 52)
+rf_fit <- function(mtry, trees = 500, data = train, formula = f10, ...) {
+  rand_forest(mtry = mtry, trees = trees, min_n = 1) |>
+    set_engine("ranger", seed = 1234, ...) |>
+    set_mode("classification") |>
+    fit(formula, data = data)
+}
+rf20 <- rf_fit(20)
+extract_fit_engine(rf20)$prediction.error                 # OOB Brier score
+oob_prob <- extract_fit_engine(rf20)$predictions[, "yes"] # OOB probability for every training well
+roc_auc_vec(train$as10, oob_prob)                         # OOB AUC
+# 3-class: rf_fit(20, data = train3, formula = reformulate(predictors, "As3Cat"))
+#   with train3 <- wells |> filter(!is.na(As3Cat), spl3cat)
+
+# ---- Part D ------------------------------------------------------------------
+xgb_spec <- boost_tree(trees = tune(), tree_depth = tune(), learn_rate = tune(),
+                       min_n = 10, sample_size = 0.5) |>
+  set_engine("xgboost") |> set_mode("classification")
+xgb_grid <- expand_grid(trees = c(250, 500, 1000, 2000, 3000),
+                        tree_depth = c(1, 3, 6), learn_rate = c(0.01, 0.1))
+xgb_res <- tune_grid(workflow(f10, xgb_spec), resamples = folds, grid = xgb_grid,
+                     metrics = metric_set(roc_auc, accuracy))     # ~2-5 min
+xgb_final <- finalize_workflow(workflow(f10, xgb_spec), select_best(xgb_res, metric = "roc_auc")) |>
+  last_fit(split = make_splits(train, test))
+p_xgb_test <- collect_predictions(xgb_final)$.pred_yes
+
+# ---- Part E ------------------------------------------------------------------
+summary(gbm10, plotit = FALSE)                                    # relative influence
+rf_perm <- rf_fit(20, importance = "permutation")
+extract_fit_engine(rf_perm)$variable.importance
+
+# partial dependence: average prediction when every well is set to each grid value (L11 slide 9)
+pdp_curve <- function(pred_fun, data, var,
+                      grid = quantile(data[[var]], seq(0.02, 0.98, length.out = 20))) {
+  map_dfr(grid, \(v) tibble(value = v, yhat = mean(pred_fun(mutate(data, !!var := v)))))
+}
+set.seed(1)
+pdp_sample <- slice_sample(train, n = 2000)          # 2,000 wells is plenty and much faster
+pdp_curve(\(nd) predict(gbm10, nd, n.trees = 4500, type = "response"), pdp_sample, "DMppt8110")
+pdp_curve(\(nd) predict(rf20, nd, type = "prob")$.pred_yes,           pdp_sample, "DMppt8110")
+
+tibble(truth = train$as10, .pred_yes = oob_prob) |>
+  threshold_perf(truth, .pred_yes, thresholds = seq(0.02, 0.6, by = 0.01),
+                 metrics = metric_set(sensitivity, specificity, j_index, ppv))
+```
+
+# Check your numbers
+
+- **Part A:** 14,303 training and 6,120 test wells; 10.8% exceed 10 µg/L in each. BRT10 test accuracy ≈ 0.91, sensitivity ≈ 0.34, AUC ≈ 0.85, the same as Table 1 to within 0.01. "Always no" scores 0.892.
+- **Part B:** the root split of every tree is on precipitation (`DMppt8110` ≈ 408 mm). The small tree has 4 leaves.
+- **Part C:** the OOB error is flat after about 250 trees. The 3-class random forest has test accuracy ≈ 0.83 and kappa ≈ 0.40, and C2 recall is close to 0.1.
+- **Part D:** the best CV AUC is ≈ 0.855, at depth 6 with learning rate 0.01.
+- **Runtime:** about 15 minutes for everything on a laptop. Most of it is the `gbm()` fit in Part A (~4 min) and the two `tune_grid()` calls (~3 min each). Save fitted models with `saveRDS()` so you only fit them once.
