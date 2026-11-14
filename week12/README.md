@@ -2,7 +2,7 @@
 
 PubH 6010 Independent Study (Fall 2026), Week 12. Companion to PUBH 6886 Lecture 12.
 
-Katie fits three SVMs (linear, polynomial and radial kernels) to one slice of **Searcy & Boehm (2022)**, a forecasting study of fecal indicator bacteria at California beaches. The slice is Cowell Beach *E. coli* > 400 CFU/100 mL, forecast 1 day ahead, trained on 2007–2012 and tested on 2013–2014. The paper fits about 400 models (BLR, SVM, RF, GBM); this exercise fits 3. The samples are exactly the paper's partition (SI Table S5). The predictors are fixed at the 10 that SI Table S6 lists as most often selected for Cowell *E. coli*. There are 5 questions.
+You will fit three SVMs (linear, polynomial and radial kernels) to one slice of **Searcy & Boehm (2022)**, a forecasting study of fecal indicator bacteria at California beaches. The slice is Cowell Beach *E. coli* > 400 CFU/100 mL, forecast 1 day ahead, trained on 2007–2012 and tested on 2013–2014. The paper fits about 400 models (BLR, SVM, RF, GBM); this exercise fits 3. The samples are exactly the paper's partition (SI Table S5). The predictors are fixed at the 10 that SI Table S6 lists as most often selected for Cowell *E. coli*. There are 5 questions.
 
 ## Files
 
