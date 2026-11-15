@@ -1,7 +1,7 @@
 ---
 title: "Lectures 10–11 Exercise — Trees, Bagging, Random Forests and Boosting"
 subtitle: "PubH 6010 Independent Study · Replicating Lombard et al. (2021): machine-learning models of arsenic in US private wells"
-author: "Your name:"
+author: "Katie O'Brien"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -75,41 +75,636 @@ Submit your knitted `.Rmd` with short written answers to the questions in **bold
 ## Part A — Replicate the boosted model for > 10 µg/L (L11 slides 4–7, 13–15)
 
 1. Using the paper's split (`spl10`), report the number of training and test wells and the proportion with arsenic > 10 µg/L in each.
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(gbm)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(xgboost)
+library(probably)
+tidymodels_prefer()
+
+as_raw <- read_csv("AsModelInput.csv")
+outcome_cols <- c("bas1", "bas5", "bas10", "As3Cat", "spl1", "spl5", "spl10", "spl3cat")
+predictors   <- setdiff(names(as_raw), outcome_cols)          # 85 predictors
+
+wells <- as_raw |>
+  filter(if_all(all_of(predictors), \(x) !is.na(x))) |>      # drops 27 wells
+  mutate(as10   = factor(if_else(bas10 == 1, "yes", "no"), levels = c("yes", "no")),
+         As3Cat = factor(As3Cat))
+train <- wells |> filter(spl10)
+test  <- wells |> filter(!spl10)
+f10   <- reformulate(predictors, response = "as10")
+
+# ---- helper: the five Table 1 metrics at a probability cutoff ----------------
+test_metrics <- function(truth, prob_yes, cut = 0.5) {
+  cls <- factor(if_else(prob_yes > cut, "yes", "no"), levels = c("yes", "no"))
+  tibble(accuracy    = accuracy_vec(truth, cls),
+         sensitivity = sensitivity_vec(truth, cls),
+         specificity = specificity_vec(truth, cls),
+         auc         = roc_auc_vec(truth, prob_yes),
+         kappa       = kap_vec(truth, cls))
+}
+
+
+train %>% 
+  count(bas10 == "1")
+
+test %>%
+  count(bas10 == "1")
+
+```
+
+There are 14,303 wells in the training dataset. 1,544 of these have arsenic levels above 10 ug/L. There are 6,120 wells in the testing dataset. 661 of these wells have arsenic levels above 10 ug/L. 
+
 2. Fit the paper's BRT10 with `gbm()` (settings in the table above, `bag.fraction = 0.5`, `set.seed(1234)`). Compute test-set accuracy, sensitivity, specificity, AUC and kappa at the 0.5 cutoff, and the same on the training set, with `test_metrics()`. Put them next to the paper's Table 1.
+```{r}
+# ---- Part A ------------------------------------------------------------------
+set.seed(1234)
+gbm10 <- gbm(reformulate(predictors, "bas10"), data = train,   # gbm wants a 0/1 outcome
+             distribution = "bernoulli", n.trees = 4500, interaction.depth = 6,
+             shrinkage = 0.01, n.minobsinnode = 10, bag.fraction = 0.5)   # ~2-4 min
+p_gbm_test <- predict(gbm10, test, n.trees = 4500, type = "response")
+metrics <- test_metrics(test$as10, p_gbm_test)
+
+metrics_long <- metrics %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "metric",
+    values_to = " GBMmodel"
+  )
+
+table1 <- tibble(
+  metric = c("accuracy", "sensitivity", "specificity", "auc", "kappa"), 
+  paper = c("91.2", "33.9", "98.2", "0.850", "0.413")
+)
+
+
+left_join(table1, metrics_long, by = "metric")
+
+```
 3. Two baselines: the accuracy of predicting "no" for every well, and a main-effects logistic regression (`logistic_reg()`) on all 85 predictors.
+```{r}
+# baseline model for predicting no 
+p_baseline_no <- rep(0, nrow(test))
+test_metrics(test$as10, p_baseline_no)
+
+# logistic regression model
+logit10 <- logistic_reg() |> fit(f10, data = train)
+p_logit_test <- predict(logit10, test, type = "prob")$.pred_yes
+test_metrics(test$as10, p_logit_test)
+```
+
 
 > **Q1.** Do your numbers match Table 1? Give two reasons small differences could remain. Why is training performance so much better than test performance, and why is this a bigger concern for boosting than for a random forest (slide 7)? Compare the model's 91% accuracy with the "always no" baseline. Which of the five metrics would you lead with in an abstract, and why? What does `interaction.depth = 6` mean in `gbm`?
+
+The numbers do match table 1 for the most part, with some small differences. Small differences could remain because the models uses a stochastic process, which is random, and the samples chosen in the subsampling step may be different every time. Training performance is better than test performance because the model is using data it has seen before. This is a bigger concern for boosting than for random forest because, in boosting, decisions are made based on the previous tree, so the order the trees were created in is important. The accuracy of the "always no" model is 89%. I would lead with accuracy in the metric because it describes the ratio of correct predictions to total predictions, which would be helpful for this topic. In GBM, interaction.depth specifies the maximum number of splits to perform on each individual tree.  
+
+
 
 ## Part B — A single classification tree (L10 slides 25–37)
 
 4. Grow the maximal tree with `rpart(..., cp = 0, xval = 10)` (slide 31). Use `plotcp()` and the `cptable` to find the α with the smallest CV error and the α chosen by the 1-SE rule.
+```{r}
+set.seed(1234)
+tree_max <- rpart(f10, data = train, method = "class", parms = list(split = "gini"),
+                  control = rpart.control(minsplit = 20, minbucket = 5, cp = 0, xval = 10))
+printcp(tree_max)
+plotcp(tree_max)
+```
+The alpha with the smallest cp value is 0.0019. Within 1-SE, the alpha value is 0.006. 
+
 5. Tune `cost_complexity` with tidymodels on the 5 folds, with both `accuracy` and `roc_auc` as metrics. Plot both against α. Report the test metrics of the tree chosen by the 1-SE rule on accuracy and of the tree with the best CV AUC.
+```{r}
+set.seed(1234)
+folds <- vfold_cv(train, v = 5, strata = as10)            # reuse these folds in Part D
+cart_spec <- decision_tree(cost_complexity = tune(), min_n = 20) |>
+  set_engine("rpart") |> set_mode("classification")
+cart_res <- tune_grid(workflow(f10, cart_spec), resamples = folds,
+                      grid = tibble(cost_complexity = 10^seq(-4, -1.5, by = 0.5)),
+                      metrics = metric_set(accuracy, roc_auc))
+# model chosen by 1 SE rule using accuracy
+hp_1se_acc <- select_by_one_std_err(cart_res, desc(cost_complexity), metric = "accuracy")
+
+# plotting accuracy and ROC against alpha
+autoplot(cart_res) +
+  scale_x_log10() +
+  labs(
+    x = "Alpha",
+    y = "CV Metric",
+    title = "Decision Tree Tuning Performance"
+  ) +
+  theme_minimal()
+
+hp_best_auc <- select_best(
+  cart_res, 
+  metric = "roc_auc"
+)
+
+cart_wf <- workflow(f10, cart_spec)
+
+# helper function for test metrics
+get_model_test_metrics <- function(hp_selected, model_label) {
+  final_wf <- finalize_workflow(cart_wf, hp_selected)
+  fit_model <- fit(final_wf, data = train)
+  
+  # Predict test probabilities for the positive class ("yes")
+  test_probs <- predict(fit_model, new_data = test, type = "prob")$.pred_yes
+  
+  # Calculate test metrics using your custom helper function
+  test_metrics(truth = test$as10, prob_yes = test_probs, cut = 0.5) %>%
+    mutate(model = model_label, .before = 1)
+}
+
+# metrics for models chosen by 1 SE accuracy and CV AUC
+results_1se_acc  <- get_model_test_metrics(hp_1se_acc, "1-SE Rule (Accuracy)")
+results_best_auc <- get_model_test_metrics(hp_best_auc, "Best CV AUC")
+
+combined_test_metrics <- bind_rows(results_1se_acc, results_best_auc)
+
+print(combined_test_metrics)
+```
+
 6. Prune to a small tree (`cp = 0.0065`, 3 splits) and draw it with `rpart.plot()`. Then grow the same small tree on three bootstrap resamples of the training wells (`slice_sample(train, prop = 1, replace = TRUE)`) and record the first few splits of each.
+```{r}
+# prune to a small tree
+tree_small <- rpart::prune(tree_max, cp = 0.0065)   # rpart::, because another package also has a prune()
+rpart.plot(tree_small, extra = 107)
+
+tree_formula <- formula(tree_max)
+tree_control <- tree_max$control
+
+# Set seed for reproducibility across bootstrap samples
+set.seed(123)
+
+# bootstrap samples
+for (i in 1:3) {
+  
+  # resample with replacement
+  boot_train <- slice_sample(train, prop = 1, replace = TRUE)
+  
+  # fit tree and prune
+  boot_tree_max <- rpart(tree_formula, data = boot_train, control = tree_control)
+  boot_tree_small <- rpart::prune(boot_tree_max, cp = 0.0065)
+  
+  # show first few splits
+  print(boot_tree_small)
+}
+
+cor(wells$as_c, wells$sb_c)
+```
+
+
 
 > **Q2.** Describe the small tree in two sentences a state health department could use. Why do accuracy and AUC choose such different trees (think about the 89% baseline and slide 30)? How does the best single tree compare with the boosted model and with logistic regression? What did the bootstrap resamples show, and how does it connect to the motivation for bagging (slides 37–40)? Hint: compute the correlation between `as_c` and `sb_c`.
+
+This tree identifies important predictors of wells contaminated with private arsenic. Important predictors include precipitation, soil C-horizon geochemistry, and organic carbon. Accuracy and AUC choose different trees because accuracy is based on the ratio of correct predictions to total predictions while AUC is based on on the true positive rate vs the false positive rate. The best model (using the tree within 1 SE of the best accuracy) has similar accuracy to the boosted model and logistic regression, a sensitivity value and kappa value in between them, and has slightly lower specificity and AUC. The bootstrap resamples showed that precipitation is the root split of every tree. This connects to the motivation for bagging because bagging reduces the variance of prediction models. 
 
 ## Part C — Bagging and random forests (L10 slides 38–53)
 
 7. With `rf_fit()` (starter code), fit bagging (m = 85) and a random forest (m = 9 ≈ √85) for B ∈ {10, 25, 50, 100, 250, 500, 1000}. Plot the OOB error against B for both (slide 44).
+
+```{r}
+
+# starter code
+# min_n = 1 grows full trees, as randomForest() does (slides 41, 52)
+rf_fit <- function(mtry, trees = 500, data = train, formula = f10, ...) {
+  rand_forest(mtry = mtry, trees = trees, min_n = 1) |>
+    set_engine("ranger", seed = 1234, ...) |>
+    set_mode("classification") |>
+    fit(formula, data = data)
+}
+rf20 <- rf_fit(20)
+extract_fit_engine(rf20)$prediction.error                 # OOB Brier score
+oob_prob <- extract_fit_engine(rf20)$predictions[, "yes"] # OOB probability for every training well
+roc_auc_vec(train$as10, oob_prob)                         # OOB AUC
+# 3-class: rf_fit(20, data = train3, formula = reformulate(predictors, "As3Cat"))
+#   with train3 <- wells |> filter(!is.na(As3Cat), spl3cat)
+
+
+
+# B grid
+B_grid <- c(10, 25, 50, 100, 250, 500, 1000)
+
+# function to extract OOB error
+get_oob_error <- function(mtry, trees) {
+  fit_obj <- rf_fit(mtry = mtry, trees = trees)
+  extract_fit_engine(fit_obj)$prediction.error
+}
+
+# grid search across B for bagging (m = 85) and random forest (m = 9)
+q7_results <- expand.grid(
+  trees = B_grid,
+  model = c("Bagging (m = 85)", "Random Forest (m = 9)")
+) %>%
+  mutate(
+    mtry = if_else(model == "Bagging (m = 85)", 85, 9),
+    oob_error = map2_dbl(mtry, trees, get_oob_error)
+  )
+
+# plotting OOB error aginast B values
+ggplot(q7_results, aes(x = trees, y = oob_error, color = model, group = model)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_log10(breaks = B_grid) +
+  labs(
+    x = "Number of Trees (B)",
+    y = "OOB Brier Score (Prediction Error)",
+    title = "OOB Error vs. Number of Trees (B)",
+    color = "Model Type"
+  ) +
+  theme_minimal()
+```
+
 8. With B = 500, fit m ∈ {1, 3, 6, 9, 15, 20, 30, 45, 60, 85}. Tabulate the OOB Brier score and OOB AUC against m. Report the test metrics for bagging, m = 9 and the paper's m = 20.
+
+```{r}
+# M grid
+m_grid <- c(1, 3, 6, 9, 15, 20, 30, 45, 60, 85)
+
+# function to get OOB error
+get_oob_metrics <- function(mtry) {
+  fit_obj <- rf_fit(mtry = mtry, trees = 500)
+  engine <- extract_fit_engine(fit_obj)
+  
+  brier <- engine$prediction.error
+  oob_prob <- engine$predictions[, "yes"]
+  auc <- roc_auc_vec(train$as10, oob_prob)
+  
+  tibble(m = mtry, oob_brier = brier, oob_auc = auc)
+}
+
+#calculate OOB brier and OOB AUC
+q8_oob_table <- map_dfr(m_grid, get_oob_metrics)
+print("OOB Brier and OOB AUC Table:")
+print(q8_oob_table)
+
+# helper to evaluate performance
+eval_rf_test <- function(mtry, label) {
+  fit_obj <- rf_fit(mtry = mtry, trees = 500)
+  
+  # predict test probabilities for positive class "yes"
+  test_prob <- predict(fit_obj, new_data = test, type = "prob")$.pred_yes
+  
+  test_metrics(truth = test$as10, prob_yes = test_prob, cut = 0.5) %>%
+    mutate(model = label, m = mtry, .before = 1)
+}
+
+# test metrics for Bagging (m = 85), m = 9, and m = 20
+test_bagging <- eval_rf_test(85, "Bagging (m = 85)")
+test_m9      <- eval_rf_test(9,  "Random Forest (m = 9)")
+test_m20     <- eval_rf_test(20, "Paper's RF (m = 20)")
+
+q8_test_metrics <- bind_rows(test_bagging, test_m9, test_m20)
+print(q8_test_metrics)
+```
+
 9. Replicate the paper's 3-class RFC on its split (`spl3cat`, m = 20, 500 trees). Report accuracy on the training data, OOB accuracy, test accuracy and test kappa, and the accuracy of always predicting C1. Make the test confusion matrix and compute the precision and recall of each class.
+```{r}
+#  3-class training and testing datasets
+train3 <- wells %>% filter(!is.na(As3Cat), spl3cat)
+test3  <- wells %>% filter(!is.na(As3Cat), !spl3cat)
+
+# extract predictor variable names from f10
+predictors <- all.vars(f10[[3]])
+f3cat <- reformulate(predictors, "As3Cat")
+
+# 3-class Random Forest model
+rf3_fit <- rf_fit(mtry = 20, trees = 500, data = train3, formula = f3cat)
+rf3_engine <- extract_fit_engine(rf3_fit)
+
+# training accuracy and kappa
+train3_preds <- predict(rf3_fit, new_data = train3)$.pred_class
+train_acc <- accuracy_vec(train3$As3Cat, train3_preds)
+
+# OOB accuracy
+oob_acc <- 1 - rf3_engine$prediction.error
+
+# test accuracy and kappa
+test3_preds <- predict(rf3_fit, new_data = test3)$.pred_class
+test_acc   <- accuracy_vec(test3$As3Cat, test3_preds)
+test_kappa <- kap_vec(test3$As3Cat, test3_preds)
+
+# baseline accuracy
+baseline_acc <- mean(test3$As3Cat == "C1")
+
+# test confusion matrix
+test3_df <- tibble(
+  truth = test3$As3Cat,
+  estimate = test3_preds
+)
+
+conf_mat_3class <- conf_mat(test3_df, truth = truth, estimate = estimate)
+print(conf_mat_3class)
+
+# per-class precision and recall
+cm <- conf_mat_3class$table
+precision <- diag(cm) / rowSums(cm)
+recall <- diag(cm) / colSums(cm)
+
+per_class_metrics <- tibble(
+  class = colnames(cm), 
+  precision = precision, 
+  recall = recall
+)
+
+print(per_class_metrics)
+```
+
 
 > **Q3.** How many trees are enough, and can too many trees hurt here (slide 51)? Which m is best, and why does bagging do worse than a random forest on these predictors (slide 50)? The paper reports 100% training accuracy for the RFC. Is that evidence of overfitting, and which of your numbers is the honest estimate of performance on new wells? Why is C2 (5–10 µg/L) so hard to predict, and why does that matter for a health study? Finally, compare your per-class precision and recall with the paper's "user's" and "producer's" accuracy (look up the definitions). What do you notice?
+
+About 250 trees are enough based on the OOB error. There is no risk of overfitting by using more trees. m = 9 is best based on the OOB error. Bagging does worse than random forest on these predictors because the predictors are highly correlated. 100% training accuracy for the RFC is evidence of overfitting. The honest estimate of performance on new wells is 83% accuracy. C2 is hard to predict because there are fewer wells that fit into this category in the training dataset. This matters for a health study because accurately predicting contaminated wells is important for employing appropriate interventions. 
 
 ## Part D — Tuning boosted trees with tidymodels (L11 slides 7, 18–21)
 
 10. Tune `boost_tree()` with the xgboost engine (`min_n = 10`, `sample_size = 0.5`) over trees ∈ {250, 500, 1000, 2000, 3000} × tree_depth ∈ {1, 3, 6} × learn_rate ∈ {0.01, 0.1}, using CV AUC. Plot CV AUC against trees, coloured by depth and faceted by learning rate.
+```{r}
+xgb_spec <- boost_tree(trees = tune(), tree_depth = tune(), learn_rate = tune(),
+                       min_n = 10, sample_size = 0.5) |>
+  set_engine("xgboost") |> set_mode("classification")
+xgb_grid <- expand_grid(trees = c(250, 500, 1000, 2000, 3000),
+                        tree_depth = c(1, 3, 6), learn_rate = c(0.01, 0.1))
+xgb_res <- tune_grid(workflow(f10, xgb_spec), resamples = folds, grid = xgb_grid,
+                     metrics = metric_set(roc_auc, accuracy))     # ~2-5 min
+
+# metrics
+xgb_auc_df <- collect_metrics(xgb_res) |>
+  filter(.metric == "roc_auc") |>
+  mutate(
+    tree_depth = factor(tree_depth),
+    learn_rate_label = paste("Learning Rate:", learn_rate)
+  )
+
+# plot CV AUC against trees, colored by depth and faceted by learning
+ggplot(xgb_auc_df, aes(x = trees, y = mean, color = tree_depth, group = tree_depth)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ learn_rate_label) +
+  labs(
+    x = "Number of Trees",
+    y = "Cross-Validation Mean AUC",
+    color = "Tree Depth",
+    title = "XGBoost Hyperparameter Tuning Performance (CV AUC)"
+  ) +
+  theme_minimal()
+
+```
+
+
 11. Finalise the best setting with `last_fit()` on the paper's split. Build one table of test metrics for: logistic regression, the best CART, bagging, random forest (m = 20), the paper's gbm, and your tuned xgboost.
+```{r}
+xgb_final <- finalize_workflow(workflow(f10, xgb_spec), select_best(xgb_res, metric = "roc_auc")) |>
+  last_fit(split = make_splits(train, test))
+p_xgb_test <- collect_predictions(xgb_final)$.pred_yes
+
+# comparison table
+p_rf20  <- predict(rf20, test, type = "prob")$.pred_yes
+p_gbm   <- predict(gbm10, test, n.trees=4500, type = "response")
+p_bag <- predict(rf_fit(85), test, type = "prob")$.pred_yes
+
+cart_final_wf <- finalize_workflow(cart_wf, hp_1se_acc)
+cart_final_fit <- fit(cart_final_wf, data = train)
+p_cart <- predict(cart_final_fit, test, type = "prob")$.pred_yes
+
+
+
+model_probs <- list(
+  "Logistic Regression"  = p_logit_test,
+  "Best CART (1-SE)"     = p_cart,
+  "Bagging (m = 85)"     = p_bag,
+  "Random Forest (m=20)" = p_rf20,
+  "Paper's GBM"          = p_gbm,
+  "Tuned XGBoost"        = p_xgb_test
+)
+
+all_test_metrics <- imap_dfr(model_probs, function(probs, model_name) {
+  test_metrics(truth = test$as10, prob_yes = probs, cut = 0.5) %>%
+    mutate(model = model_name, .before = 1)
+})
+
+print(all_test_metrics)
+```
+
 
 > **Q4.** What happens to CV AUC as B grows at ν = 0.1 vs ν = 0.01, and why? What do depth-1 trees (stumps) assume, and what does their gap from depth 6 tell you about interactions in arsenic geochemistry? Is xgboost's `tree_depth = 6` the same as gbm's `interaction.depth = 6`? In your final table, which differences are large and which are within noise? (A rough SE for a test AUC here is 0.008.)
+
+At v = 0.01, CV AUC increases as tree depth increases. At 0.1, CV AUC increases from a tree depth of 1 vs tree depths of 3 vs 6, but AUC is relatively the same at tree depths of 3 vs 6. This is because at a slower learning rate, the model is more likely to not miss the minimum for the loss function. Depth-1 trees assume that there are no interactions between features. Their gap from depth-6 trees implies that there are interactions in arsenic geochemistry. Tree_depth in xgboost is not quite same thing as interaction.depth in gbm, but they are related. In the final table, there are large differences between sensitivity and kappa. There are also differences in AUC. In AUC, the differences between bagging, random forest, the paper's GBM, and the tuned xgboost are all within noise (because they are within 1 SE of each other), but the differences bewteen logistic regression and best CART are large differences. 
 
 ## Part E — Interpretation and use in a health study (L11 slides 8–10)
 
 12. Make one table of variable-importance ranks for gbm relative influence, RF impurity importance and RF permutation importance (m = 20). Compare the total gbm influence of the 17 continuous and the 68 binary predictors.
+```{r}
+summary(gbm10, plotit = FALSE)                                    # relative influence
+rf_perm <- rf_fit(20, importance = "permutation")
+extract_fit_engine(rf_perm)$variable.importance
+
+# GBM relative influence
+gbm_imp <- summary(gbm10, plotit = FALSE) %>%
+  as_tibble() %>%
+  rename(variable = var, gbm_rel_inf = rel.inf)
+
+# RF impurity importance 
+rf_imp_fit <- rf_fit(20, importance = "impurity")
+rf_impurity_vec <- extract_fit_engine(rf_imp_fit)$variable.importance
+
+rf_impurity_df <- tibble(
+  variable = names(rf_impurity_vec),
+  rf_impurity = as.numeric(rf_impurity_vec)
+)
+
+# RF permutation importance
+rf_perm_fit <- rf_fit(20, importance = "permutation")
+rf_perm_vec <- extract_fit_engine(rf_perm_fit)$variable.importance
+
+rf_perm_df <- tibble(
+  variable = names(rf_perm_vec),
+  rf_permutation = as.numeric(rf_perm_vec)
+)
+
+# talbe
+var_importance_ranks <- gbm_imp %>%
+  full_join(rf_impurity_df, by = "variable") %>%
+  full_join(rf_perm_df, by = "variable") %>%
+  mutate(
+    rank_gbm_rel_inf = min_rank(desc(gbm_rel_inf)),
+    rank_rf_impurity = min_rank(desc(rf_impurity)),
+    rank_rf_perm     = min_rank(desc(rf_permutation))
+  ) %>%
+  select(variable, rank_gbm_rel_inf, rank_rf_impurity, rank_rf_perm) %>%
+  arrange(rank_gbm_rel_inf)
+
+print(var_importance_ranks, n = 20)
+
+# compare total GBM influence
+continuous_vars <- train %>%
+  select(all_of(gbm_imp$variable)) %>%
+  map_lgl(~ is.numeric(.x) && length(unique(.x)) > 2)
+
+var_types <- tibble(
+  variable = names(continuous_vars),
+  type = if_else(continuous_vars, "Continuous", "Binary")
+)
+
+# aggregate relative influence by predictor type
+gbm_type_comparison <- gbm_imp %>%
+  inner_join(var_types, by = "variable") %>%
+  group_by(type) %>%
+  summarise(
+    num_predictors = n(),
+    total_rel_influence = sum(gbm_rel_inf),
+    pct_total_influence = (sum(gbm_rel_inf) / sum(gbm_imp$gbm_rel_inf)) * 100,
+    mean_influence_per_var = mean(gbm_rel_inf),
+    .groups = "drop"
+  )
+
+print(gbm_type_comparison)
+
+```
+
 13. Draw partial dependence plots for precipitation (`DMppt8110`) from gbm and from the random forest with `pdp_curve()`, on one plot. Overlay the raw proportion of wells > 10 µg/L by precipitation decile.
+```{r}
+# partial dependence: average prediction when every well is set to each grid value (L11 slide 9)
+pdp_curve <- function(pred_fun, data, var,
+                      grid = quantile(data[[var]], seq(0.02, 0.98, length.out = 20))) {
+  map_dfr(grid, \(v) tibble(value = v, yhat = mean(pred_fun(mutate(data, !!var := v)))))
+}
+set.seed(1)
+pdp_sample <- slice_sample(train, n = 2000)          # 2,000 wells is plenty and much faster
+pdp_curve(\(nd) predict(gbm10, nd, n.trees = 4500, type = "response"), pdp_sample, "DMppt8110")
+pdp_curve(\(nd) predict(rf20, nd, type = "prob")$.pred_yes,           pdp_sample, "DMppt8110")
+
+# GBM partial dependence curve
+pdp_gbm <- pdp_curve(
+  \(nd) predict(gbm10, nd, n.trees = 4500, type = "response"), 
+  pdp_sample, 
+  "DMppt8110"
+) %>%
+  mutate(model = "GBM")
+
+# random forest partial dependence curve
+pdp_rf <- pdp_curve(
+  \(nd) predict(rf20, nd, type = "prob")$.pred_yes, 
+  pdp_sample, 
+  "DMppt8110"
+) %>%
+  mutate(model = "Random Forest (m=20)")
+
+# combine curves
+pdp_models <- bind_rows(pdp_gbm, pdp_rf)
+
+#  mean precipitation and observed proportion of positive outcomes 
+decile_data <- train %>%
+  filter(!is.na(DMppt8110), !is.na(as10)) %>%
+  mutate(decile = ntile(DMppt8110, 10)) %>%
+  group_by(decile) %>%
+  summarise(
+    value = mean(DMppt8110),
+    yhat = mean(as10 == "yes"),
+    model = "Observed Decile Prop.",
+    .groups = "drop"
+  )
+
+# plot
+ggplot() +
+  # Model Partial Dependence Lines
+  geom_line(
+    data = pdp_models, 
+    aes(x = value, y = yhat, color = model), 
+    linewidth = 1.1, linetype = "solid"
+  ) +
+  geom_line(
+    data = decile_data, 
+    aes(x = value, y = yhat, color = model), 
+    linetype = "solid", 
+    linewidth = 0.8
+  ) +
+  scale_color_manual(
+    name = "Legend",
+    values = c(
+      "GBM" = "lightblue", 
+      "Random Forest (m=20)" = "darkseagreen3", 
+      "Observed Decile Prop." = "orchid"
+    )
+  ) +
+  labs(
+    x = "Precipitation",
+    y = "Predicted Probability / Proportion > 10 µg/L",
+    title = "Partial Dependence Plot for Precipitation",
+    color = "Legend",
+    linetype = "Legend"
+  ) +
+  theme_minimal()
+```
+
 14. Using the random forest's **OOB** predicted probabilities (no test data), plot sensitivity, specificity and PPV against the cutoff with `probably::threshold_perf()`. Pick the cutoff that maximises Youden's J. Apply it to the test set and report sensitivity, specificity, PPV and the share of wells flagged.
+```{r}
+# oob_df <- tibble(truth = train$as10, .pred_yes = oob_prob) |>
+  # threshold_perf(truth, .pred_yes, thresholds = seq(0.02, 0.6, by = 0.01),
+               # metrics = metric_set(sensitivity, specificity, j_index, ppv))
+
+oob_prob <- extract_fit_engine(rf20)$predictions[, "yes"]
+
+oob_df <- tibble(
+  truth    = train$as10, 
+  .pred_yes = oob_prob
+)
+
+thresh_perf <- oob_df |>
+  threshold_perf(
+    truth, 
+    .pred_yes, 
+    thresholds = seq(0.02, 0.6, by = 0.01),
+    metrics    = metric_set(sensitivity, specificity, j_index, ppv)
+  )
+
+# calculate sensitivity and specificity
+thresh_perf %>%
+  filter(.metric %in% c("sens", "spec", "ppv")) %>%
+  ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = "Probability Threshold (Cutoff)",
+    y = "Metric Value",
+    title = "Random Forest OOB Performance across Decision Cutoffs",
+    color = "Metric"
+  ) +
+  theme_minimal()
+
+# find cutoff value
+best_cutoff_row <- thresh_perf %>%
+  filter(.metric == "j_index") %>%
+  slice_max(.estimate, n = 1, with_ties = FALSE)
+
+best_cutoff <- best_cutoff_row$.threshold
+print(best_cutoff)
+
+# apply best cutoff to metrics
+# predict test set probabilities using rf20
+test_prob_rf20 <- predict(rf20, new_data = test, type = "prob")$.pred_yes
+
+test_perf_optimal <- test_metrics(
+  truth = test$as10, 
+  prob_yes = test_prob_rf20, 
+  cut = best_cutoff
+) %>%
+  mutate(
+    cutoff = best_cutoff,
+    share_flagged = mean(test_prob_rf20 > best_cutoff),
+    .before = 1
+  )
+
+print(test_perf_optimal)
+
+```
+
 
 > **Q5.** Which predictors are important under all three measures, and where do the measures disagree? Why might impurity importance favour continuous variables over rare binary ones? Describe the precipitation partial dependence, and say whether it is a causal effect of precipitation. Is it relevant to your extreme-weather question? (Precipitation here is a 1981–2010 average.) If an epidemiologist used these predictions as the exposure in a study of arsenic and bladder cancer, would you give them the 0.5 class, your Youden class, or the probability, and why? Last, the paper's test set is a random 30% of wells. What would a spatially blocked test set measure that this one does not?
+
+Precipitation and soil horizon geochemistry variables are important under all three measures. Impurity importance may favor continuous variables over rare binary ones because there is more opportunity for splitting. The partial dependence plot for precipitation shows that there is a large influence of precipitation in the models, but it is unclear if it is a causal effect of precipitation. If an epidemiologist used these predictions as the exposure in a study of arsenic and bladder cancer, I would give them the probability. A spatially blocked test set would consider how far away training and testing well points are. 
 
 # Starter code
 
