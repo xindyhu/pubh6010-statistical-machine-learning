@@ -1,0 +1,649 @@
+---
+title: "Lecture 12 Exercise — Support Vector Machines"
+subtitle: "PubH 6010 Independent Study · Searcy & Boehm (2022): forecasting E. coli exceedances at Cowell Beach"
+author: "Katie O'Brien"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+Lecture 12 covers the **maximal margin classifier**, the **support vector classifier** (linear kernel) and the **support vector machine** with **polynomial** and **radial** kernels. This week's paper compares four classifiers, an SVM among them, for forecasting whether a beach water sample will exceed California's fecal indicator bacteria (FIB) standard up to three days ahead. It is a small-scale version of the early-warning question in your project: can environmental data available today predict a water-quality hazard tomorrow?
+
+> Searcy RT, Boehm AB. Know Before You Go: Data-Driven Beach Water Quality Forecasting. *Environmental Science & Technology* (2022). doi:[10.1021/acs.est.2c05972](https://doi.org/10.1021/acs.est.2c05972). Free copy and Supporting Information (SI): [NOAA repository](https://repository.library.noaa.gov/view/noaa/56907).
+
+The data are on the Stanford Digital Repository, doi:[10.25740/nw799cp6263](https://doi.org/10.25740/nw799cp6263) (CC BY). The authors' Python code is at [github.com/rtsearcy/wq-forecasting](https://github.com/rtsearcy/wq-forecasting).
+
+**Reading before you start.**
+
+- Read the Abstract, Introduction and Methods.
+- In the SI, read the **Tuning Case Study** (p. S3) and Tables **S3, S5, S6, S7 and S8**. We compare with these tables.
+
+**What we take from the paper.** The paper fits about 400 forecast models: 2 beaches × 2 FIB types × 8 train/test partitions × 3 lead times × 4 model types. We take **one slice** of it and fit **three SVMs** on it:
+
+| paper's dimension | this exercise |
+|---|---|
+| beach × FIB | Cowell Beach (Santa Cruz), *E. coli* > 400 CFU/100 mL. This combination has the most exceedances (19% of samples) |
+| partition | the paper's first: train **2007–2012**, test **2013–2014**. It has the most test exceedances (20) |
+| lead time | **1-day-ahead** forecast |
+| predictors | a **fixed** set of 10, the ten most often selected for Cowell *E. coli* in SI Table S6. The paper selected variables separately for every model with permutation importance + recursive feature elimination |
+| model types | **SVM only**, with linear, polynomial and radial kernels. The paper also fitted logistic regression, random forests and gradient boosting |
+| class imbalance | the paper's `class_weight = 'balanced'` |
+
+**Comparing with the paper.** The paper does not report results for single slices. It reports **medians across many models**. For all SVM models (Table S7) the medians are sensitivity 0.00, specificity 1.00 and AUC 0.56. For Cowell *E. coli* across all model types (Table S8) they are 0.12, 0.91 and 0.58. After cutoff tuning (SI p. S3) the SVM medians are sensitivity 0.32 and specificity 0.78. So the comparison is "is my slice inside the paper's range, and why or why not?", not an exact match as in Week 11.
+
+**Code: slides vs here.** As in previous weeks we use tidymodels where the slides use `caret`. The engine is the slides' `kernlab::ksvm()`.
+
+| slides | here |
+|---|---|
+| `ksvm(AHD ~ ., kernel = "vanilladot", C = 10)` | `svm_linear(cost = 10) |> set_engine("kernlab")` |
+| `kernel = "polydot", kpar = list(degree, scale, offset)` | `svm_poly(cost, degree, scale_factor)` (offset fixed at 1) |
+| `kernel = "rbfdot", kpar = list(sigma)` | `svm_rbf(cost, rbf_sigma)` |
+| `train(method = "svmLinear", tuneGrid, trControl = trainControl("cv", number = 10))` | `tune_grid(..., resamples = vfold_cv(train, v = 10, strata = exc))` |
+| `svm_fit@SVindex`, `nSV(svm_fit)` | `extract_fit_engine(fit) |> nSV()` |
+| `ksvm` scales predictors internally (`scaled = TRUE`) | `step_normalize()` in a recipe, so the scaling is explicit and uses training means and SDs |
+
+**Install once:** `install.packages(c("tidymodels", "kernlab"))`.
+
+# Data
+
+`cowell_ec_lead1.csv` has 384 samples × 15 columns. It was built from the authors' `CB_bulk_dataset.csv` (also in this folder) by `raw/prepare_cowell_slice.py`, which copies the paper's own data-cleaning code. So the samples are exactly those in the paper's partition.
+
+| column | meaning |
+|---|---|
+| `date`, `year` | sampling date (April–October each year) |
+| `split` | `train` (2007–2012) or `test` (2013–2014) |
+| `EC`, `EC_exc` | *E. coli* (CFU/100 mL); 1 if `EC` > 400, the California single-sample standard |
+| `lograin6` | log10 rainfall on the 6th day before sampling |
+| `logflow4` | log10 mean daily San Lorenzo River discharge, 4 days before |
+| `WVHT4` | significant wave height (m), 4 days before |
+| `APD2`–`APD5` | average wave period (s), 2–5 days before |
+| `tide_max4` | predicted daily maximum tide level (m), 4 days before |
+| `rad4` | mean daily solar irradiance (W/m²), 4 days before |
+| `atemp_min5` | daily minimum air temperature (°C), 5 days before |
+
+The number in each name is the number of **days before the sampling day** (SI Tables S2.1–S2.5). Every predictor has a lag of at least 2 days, so all of them would be known when a forecast is issued the day before sampling.
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**.
+
+# Tasks
+
+## Part A — The data
+
+1. Count the samples and exceedances in the training and test sets, and check them against SI Table S5 (Cowell, EC, first row). Tabulate the exceedance rate by year. What test accuracy does "always predict no exceedance" achieve?
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(kernlab)
+tidymodels_prefer()
+
+cb <- read_csv("cowell_ec_lead1.csv") |>
+  mutate(exc = factor(if_else(EC_exc == 1, "yes", "no"), levels = c("yes", "no")))
+predictors <- c("lograin6", "logflow4", "WVHT4", "APD2", "APD3", "APD4", "APD5",
+                "tide_max4", "rad4", "atemp_min5")
+train <- cb |> filter(split == "train") |> select(exc, all_of(predictors))
+test  <- cb |> filter(split == "test")  |> select(exc, all_of(predictors))
+
+# the paper's class_weight = 'balanced': n / (2 * n_class)
+w_bal <- c(yes = nrow(train) / (2 * sum(train$exc == "yes")),
+           no  = nrow(train) / (2 * sum(train$exc == "no")))
+
+rec <- recipe(exc ~ ., data = train) |> step_normalize(all_predictors())
+
+# ---- helpers -----------------------------------------------------------------
+# SVM decision value f(x), oriented so that larger = more likely "yes".
+# (kernlab's decision value is positive for the 2nd factor level, "no", so we flip it.)
+svm_score <- function(wf_fit, new_data) {
+  x <- extract_recipe(wf_fit) |> bake(new_data = new_data, all_predictors())
+  -as.numeric(predict(extract_fit_engine(wf_fit), x, type = "decision"))
+}
+# linear kernel only: coefficient vector beta (standardized scale), positive = toward "yes"
+svm_w <- function(wf_fit) {
+  m <- extract_fit_engine(wf_fit)
+  -colSums(coef(m)[[1]] * xmatrix(m)[[1]])
+}
+# prob.model = FALSE: no Platt probabilities (see Part D), so predict() returns classes only
+lin_fit <- function(C, weights = NULL, data = train) {
+  spec <- svm_linear(cost = C) |>
+    set_engine("kernlab", class.weights = weights, prob.model = FALSE) |>
+    set_mode("classification")
+  workflow(rec, spec) |> fit(data)
+}
+
+# counting exceedances in training and testing sets
+train %>%
+  count(exc == "yes")
+
+test %>%
+  count(exc == "yes")
+
+# calculating exceedance rate by year
+cb %>%
+  group_by(year) %>%
+  summarize(
+    total_samples = n(),
+    exceedances = sum(exc == "yes"),
+    exceedance_rate = mean(exc == "yes")
+  )
+
+```
+The counts of exceedances in the training and testing sets match table S5. "Always predict no exceedance" would achieve a test accuracy of ~78% because there is a ~22% exceedance rate in the test set. 
+
+2. Report the mean and SD of each predictor in the training set. What share of samples had any rain 6 days before sampling (`lograin6 > 0`), and what is the exceedance rate with and without it?
+```{r}
+# mean and SD of all predictors
+train %>%
+  summarize(
+    across(
+      .cols = where(is.numeric) & !any_of(c("year", "exc")), 
+      .fns = list(
+        mean = ~mean(.x, na.rm = TRUE),
+        sd = ~sd(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+# number of samples with lograin6 > 0 
+train %>%
+  filter(lograin6 > 0 ) %>%
+  summarise(n())
+
+# exceedance rate with and without lograin6 > 0 in training set
+train %>%
+  group_by(lograin6 > 0) %>%
+  summarize(exceedance_rate = mean(exc == "yes"))
+  
+```
+28 samples in the training set had rain 6 days before sampling. The exceedance rate in samples with rain in the past six days was 28.5%, vs 29.3%. 
+
+> **Q1.** Do your counts match Table S5? Describe how the exceedance rate changes over the years, and why that matters for a model trained on 2007–2012 (see SI p. S2 on changes at Cowell Beach). What is the accuracy baseline? Using the kernel formulas on the slides, explain why SVM predictors must be put on a common scale, and which predictor would dominate if they were not.
+
+The counts match table S5. Exceedance rates increase between 2007 and 2009, remain roughly the same from 2010 to 2012, decrease in 2013, and then increase again in 2014. This matters for a model trained on 2007 to 2012 because it will not take into account the water infrastructure that was implemented in 2013. The accuracy baseline is ~78% (the "always predict no exceedance" model) because the exceedance rate in the training set is ~22%. SVM predictors must be put on a common scale because the SVM function sums up the kernel functions over the predictors, and so influential predictors would dominate the function. If not standardized, then rad4 would likely dominate because of how high the values are. 
+
+## Part B — The support vector classifier (linear kernel)
+
+3. Fit a linear SVM **without class weights** for C ∈ {0.01, 1, 100} using `lin_fit()` (starter code). For each, report the number of support vectors, the size of the coefficient vector ‖β‖ (`svm_w()`), and how many training samples are predicted "yes".
+```{r}
+# ---- Part B ------------------------------------------------------------------
+f <- lin_fit(1)                                       # unweighted
+nSV(extract_fit_engine(f)) 
+sqrt(sum(svm_w(f)^2))
+table(predict(f, train)$.pred_class)
+```
+There are 205 support vectors. The size of the coefficient vector is 0.00023. No training samples are predicted yes. 
+
+4. Refit with `weights = w_bal` (the paper's balanced weights) for C ∈ {0.01, 0.1, 1, 10, 100}. Report the same columns plus training sensitivity and specificity. Print the coefficient vector `svm_w()` at C = 1.
+```{r}
+lin_spec <- svm_linear(cost = tune()) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = FALSE) |>
+  set_mode("classification")
+
+c_vals <- c(0.01, 0.1, 1, 10, 100)
+
+# refitting
+fits <- map(c_vals, ~ lin_fit(C = .x, weights = w_bal, data = train))
+names(fits) <- as.character(c_vals)
+
+# summary table
+bal_results <- map2_dfr(fits, c_vals, function(f, c_val) {
+  preds <- bind_cols(
+    train |> select(exc),
+    predict(f, train)
+  )
+  
+  tibble(
+    C = c_val,
+    nSV = nSV(extract_fit_engine(f)),
+    w_norm = sqrt(sum(svm_w(f)^2)),
+    pred_no = sum(preds$.pred_class == "no"),
+    pred_yes = sum(preds$.pred_class == "yes"),
+    train_sens = sens(preds, truth = exc, estimate = .pred_class)$.estimate,
+    train_spec = spec(preds, truth = exc, estimate = .pred_class)$.estimate
+  )
+})
+
+print(bal_results)
+
+# coefficient vector at C = 1
+svm_w(fits[["1"]])
+```
+
+5. Tune C ∈ {0.001, …, 100} with class weights by 10-fold stratified CV, using **balanced accuracy** (the paper's tuning metric). Plot the CV results.
+```{r}
+set.seed(1234)
+folds <- vfold_cv(train, v = 10, strata = exc)        # reuse these folds in Parts C and D
+cv_metrics <- metric_set(bal_accuracy, sensitivity, specificity)
+lin_res <- tune_grid(workflow(rec, lin_spec), resamples = folds,
+                     grid = tibble(cost = 10^(-3:2)), metrics = cv_metrics)
+collect_metrics(lin_res)
+
+collect_metrics(lin_res) |>
+  ggplot(aes(x = cost, y = mean, color = .metric)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  geom_errorbar(
+    aes(ymin = mean - std_err, ymax = mean + std_err),
+    width = 0.15,
+    alpha = 0.7
+  ) +
+  scale_x_log10(
+    breaks = 10^(-3:2),
+    labels = scales::label_number(drop0trailing = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "10-Fold CV Metrics vs. Cost",
+    x = "Cost (C, log10 scale)",
+    y = "CV Score",
+    color = "Metric"
+  ) +
+  theme_minimal()
+```
+
+
+> **Q2.** Why does the unweighted SVM predict "no" for every sample at every C? (Hint: write down the total slack Σξᵢ of the constant classifier β = 0, β₀ = −1, and think about how much any hyperplane could reduce it when the classes overlap this much.) What do the class weights change? How does the number of support vectors change with C, and why? Is C in `ksvm` the same as C in ISL Chapter 9? Why does the fit stop changing above C = 1? Which predictors have the largest coefficients toward exceedance, and why should you not read the signs of the four `APD` lags as separate effects?
+
+The unweighted SVM predicts "no" for every sample at every C because the SVM pushes the hyperplane far into the "yes" prediction in order to minimize total penalty, which is a problem because there are not many "yes" predictions. Class weights assign separate penalities to each class to reduce class imbalance. The number of support vectors decreases as C increases because C controls the width of the margin. With a small C, there is a wide margin, which will include more support vectors, and viceversa. C in 'ksvm' is the same as ISL chapter 9 (the budget for the amount that the margin can be violated). The fit stops changing above C = 1 because at C = 1, every training point lies on or outside the margin. Lograin6, APD2, PD3, and tide_max4 have hte largest coefficients. You should not read the signs of the APD lags as separate effects because these predictors are heavily collinear.
+
+## Part C — Polynomial and radial kernels (slides: SVM with non-linear kernels)
+
+6. With class weights, tune a polynomial SVM over C ∈ {0.01, 0.1, 1, 10, 100} × degree ∈ {2, 3} × scale_factor ∈ {0.01, 0.1, 1}, and a radial SVM over C ∈ {0.01, …, 100} × σ ∈ {0.001, 0.01, 0.1, 1}. Use the same folds and balanced accuracy. Draw a heatmap of CV balanced accuracy over C × σ for the radial kernel.
+```{r}
+# ---- Part C ------------------------------------------------------------------
+
+# polynomial SVM
+poly_spec <- svm_poly(cost = tune(),degree = tune(),scale_factor = tune()) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = FALSE) |>
+  set_mode("classification")
+
+poly_grid <- crossing(
+  cost = 10^(-2:2),          
+  degree = c(2, 3),          
+  scale_factor = 10^(-2:0)   
+)
+
+poly_res <- tune_grid(workflow(rec, poly_spec),resamples = folds,grid = poly_grid,metrics = cv_metrics)
+
+# radial SVM
+rbf_spec <- svm_rbf(cost = tune(), rbf_sigma = tune()) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = FALSE) |>
+  set_mode("classification")
+rbf_res <- tune_grid(workflow(rec, rbf_spec), resamples = folds,
+                     grid = crossing(cost = 10^(-2:2), rbf_sigma = 10^(-3:0)),
+                     metrics = cv_metrics)                            # ~15 s; poly ~1 min
+
+# best models
+show_best(lin_res, metric = "bal_accuracy", n = 5)
+show_best(poly_res, metric = "bal_accuracy", n = 5)
+show_best(rbf_res, metric = "bal_accuracy", n = 5)
+
+# heatmap
+rbf_res |>
+  collect_metrics() |>
+  filter(.metric == "bal_accuracy") |>
+  ggplot(aes(x = factor(rbf_sigma), y = factor(cost), fill = mean)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.3f", mean)), color = "white", fontface = "bold", size = 4) +
+  scale_fill_viridis_c(option = "viridis", name = "CV Balanced\nAccuracy") +
+  labs(
+    title = "10-Fold CV Balanced Accuracy: Radial SVM (C × σ)",
+    x = "RBF Kernel Width (σ)",
+    y = "Cost (C)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 11)
+  )
+
+```
+
+7. Finalise the best setting of each kernel (linear, polynomial, radial), fit on all training data, and make one test-set table with the number of support vectors, CV balanced accuracy, and test sensitivity, specificity, balanced accuracy, accuracy, AUC and number of days flagged. Compute AUC from the decision value (`svm_score()`), not from a probability.
+```{r}
+# fit best model
+lin_fit_best <- finalize_workflow(workflow(rec, lin_spec), select_best(lin_res, metric = "bal_accuracy")) |> fit(train)
+
+poly_fit_best <- finalize_workflow(workflow(rec, poly_spec),select_best(poly_res, metric = "bal_accuracy")) |> fit(train)
+
+rbf_fit_best <- finalize_workflow(workflow(rec, rbf_spec),select_best(rbf_res, metric = "bal_accuracy")) |> fit(train)
+
+# extract all CV + test-set metrics for one kernel
+eval_kernel <- function(kernel_name, wf_fit, tune_res) {
+
+  best_cv_bal <- show_best(tune_res, metric = "bal_accuracy", n = 1)$mean
+  
+
+  test_preds <- bind_cols(
+    test |> select(exc),
+    predict(wf_fit, test)
+  )
+  scores <- svm_score(wf_fit, test)
+  
+  tibble(
+    kernel        = kernel_name,
+    nSV           = kernlab::nSV(extract_fit_engine(wf_fit)),
+    cv_bal_acc    = best_cv_bal,
+    test_sens     = sens(test_preds, truth = exc, estimate = .pred_class)$.estimate,
+    test_spec     = spec(test_preds, truth = exc, estimate = .pred_class)$.estimate,
+    test_bal_acc  = bal_accuracy(test_preds, truth = exc, estimate = .pred_class)$.estimate,
+    test_accuracy = accuracy(test_preds, truth = exc, estimate = .pred_class)$.estimate,
+    test_auc      = roc_auc_vec(test$exc, scores),
+    days_flagged  = sum(test_preds$.pred_class == "yes")
+  )
+}
+
+test_comparison <- bind_rows(
+  eval_kernel("Linear",     lin_fit_best,  lin_res),
+  eval_kernel("Polynomial", poly_fit_best, poly_res),
+  eval_kernel("Radial",     rbf_fit_best,  rbf_res)
+)
+
+print(test_comparison)
+```
+
+8. Draw 2,000 stratified bootstrap resamples of the test set. Report a 95% interval for each kernel's test AUC and for the AUC differences polynomial − linear and radial − linear.
+```{r}
+# decision values on the test set
+test_scores <- tibble(
+  exc  = test$exc,
+  lin  = svm_score(lin_fit_best, test),
+  poly = svm_score(poly_fit_best, test),
+  rbf  = svm_score(rbf_fit_best, test)
+)
+
+
+# bootstrap resamples
+set.seed(1234)
+boot_splits <- bootstraps(test_scores, times = 2000, strata = exc)
+
+# AUCs
+boot_aucs <- map_dfr(boot_splits$splits, function(split) {
+  d <- analysis(split)
+  
+  auc_lin  <- roc_auc_vec(d$exc, d$lin)
+  auc_poly <- roc_auc_vec(d$exc, d$poly)
+  auc_rbf  <- roc_auc_vec(d$exc, d$rbf)
+  
+  tibble(
+    Linear             = auc_lin,
+    Polynomial         = auc_poly,
+    Radial             = auc_rbf,
+    `Polynomial - Linear` = auc_poly - auc_lin,
+    `Radial - Linear`     = auc_rbf - auc_lin
+  )
+})
+
+
+# point estimates and 95% CIs
+point_ests <- tibble(
+  metric = c("Linear", "Polynomial", "Radial", "Polynomial - Linear", "Radial - Linear"),
+  estimate = c(
+    roc_auc_vec(test_scores$exc, test_scores$lin),
+    roc_auc_vec(test_scores$exc, test_scores$poly),
+    roc_auc_vec(test_scores$exc, test_scores$rbf),
+    roc_auc_vec(test_scores$exc, test_scores$poly) - roc_auc_vec(test_scores$exc, test_scores$lin),
+    roc_auc_vec(test_scores$exc, test_scores$rbf)  - roc_auc_vec(test_scores$exc, test_scores$lin)
+  )
+)
+
+boot_summary <- boot_aucs |>
+  pivot_longer(everything(), names_to = "metric", values_to = "val") |>
+  group_by(metric) |>
+  summarize(
+    ci_lower = quantile(val, 0.025),
+    ci_upper = quantile(val, 0.975),
+    .groups = "drop"
+  ) |>
+  right_join(point_ests, by = "metric") |>
+  select(metric, estimate, ci_lower, ci_upper)
+
+print(boot_summary)
+```
+
+
+> **Q3.** Which settings were chosen? Is the polynomial choice at the edge of the grid, and what does (1 + 0.01⟨x, x′⟩)³ look like when the scale is that small? What does the radial heatmap show about C and σ together, and why does every C = 0.01 cell score exactly 0.5? Do the non-linear kernels beat the linear one, on CV or on the test set, by more than the uncertainty? What does it tell you that most training samples are support vectors? How do your test AUCs compare with Table S7 (SVM) and Table S8 (Cowell, EC)?
+
+- **Part C:** CV balanced accuracy for the best setting of each kernel is ≈ 0.63–0.64. Test AUC is ≈ 0.73–0.75 for all three kernels.
+
+The polynomial kernal has the highest balanced accuracy and highest AUC. In the best polynomial model, there is a cost of 1, degree of 3, and scale factor of 0.01. It is at the edge of the grid for degree and scale factor, but not for cost. When scale is small, the equation gets smaller. The radial heatmap shows that at a high cost, a low sigma provides a balanced accuracy, and with a higher sigma, a lower cost provides a better balanced accuracy. Every C = 0.01 cell scores exactly 0.5 because when C is small, there will only be one class prediction for each observation, so sensitivity will be 1 or 0 and specificity will be 0 or 1, giving a balanced accuracy value of 0.5 every time. The non-linear kernals do not beat the linear kernal, as evidenced by 0 being contained within the 95% confidence interval in the paired AUC differences, on the test set. Most training samples being support vectors indicates a very wide margin. The test AUCs are higher than table S7 and table S8. 
+
+## Part D — Scores, probabilities and the cutoff (SI Tuning Case Study)
+
+9. Refit each tuned model **without class weights** and with `prob.model = TRUE`, so kernlab adds Platt-scaled probabilities. On the test set, count the predicted classes that are "yes" and the probabilities above 0.5, and report the maximum and mean probability. Compare the AUC from the probability with the AUC from `svm_score()`.
+```{r}
+# refit and calculate metrics foreach kernal type
+eval_platt <- function(kernel_name, base_spec, tune_res) {
+  prob_spec <- finalize_model(base_spec, select_best(tune_res, metric = "bal_accuracy")) |>
+    set_engine("kernlab", prob.model = TRUE)
+  
+  set.seed(1234)
+  prob_fit <- workflow(rec, prob_spec) |> fit(train)
+  
+  pred_cls  <- predict(prob_fit, test, type = "class")$.pred_class
+  pred_prob <- predict(prob_fit, test, type = "prob")$.pred_yes
+  scores    <- svm_score(prob_fit, test)
+  
+  tibble(
+    kernel        = kernel_name,
+    pred_yes      = sum(pred_cls == "yes"),
+    prob_gt_05    = sum(pred_prob > 0.5),
+    max_prob      = max(pred_prob),
+    mean_prob     = mean(pred_prob),
+    auc_from_prob = roc_auc_vec(test$exc, pred_prob),
+    auc_from_score = roc_auc_vec(test$exc, scores)
+  )
+}
+
+platt_results <- bind_rows(
+  eval_platt("Linear",     lin_spec,  lin_res),
+  eval_platt("Polynomial", poly_spec, poly_res),
+  eval_platt("Radial",     rbf_spec,  rbf_res)
+)
+
+print(platt_results)
+```
+
+
+10. Refit the tuned **radial** model **with** class weights and `prob.model = TRUE`. Compute the *training* AUC from `.pred_yes` and from `svm_score()`, and their correlation.
+```{r}
+rbf_w_prob_spec <- finalize_model(
+  rbf_spec,
+  select_best(rbf_res, metric = "bal_accuracy")
+) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = TRUE)
+
+set.seed(1234)
+rbf_w_prob_fit <- workflow(rec, rbf_w_prob_spec) |> fit(train)
+
+# training Platt probabilities and raw decision values
+train_prob_yes <- predict(rbf_w_prob_fit, train, type = "prob")$.pred_yes
+train_score    <- svm_score(rbf_w_prob_fit, train)
+
+# training AUCs and correlation
+train_auc_prob  <- roc_auc_vec(train$exc, train_prob_yes)
+train_auc_score <- roc_auc_vec(train$exc, train_score)
+cor_pearson     <- cor(train_prob_yes, train_score, method = "pearson")
+cor_spearman    <- cor(train_prob_yes, train_score, method = "spearman")
+
+tibble(
+  train_auc_prob  = train_auc_prob,
+  train_auc_score = train_auc_score,
+  pearson_cor     = cor_pearson,
+  spearman_cor    = cor_spearman
+)
+```
+
+11. Apply the paper's cutoff rule: the cutoff on the decision value with the highest sensitivity subject to specificity ≥ 0.80 (`cut_at_spec()`). Choose it (a) on the training-set scores, as the paper did, and (b) on out-of-fold CV scores (`oof_scores()`). Apply each cutoff, and the default (score > 0), to the test set. Report sensitivity, specificity and the share of days flagged, along with the training and out-of-fold AUCs.
+```{r}
+# the paper's rule: lowest cutoff with specificity >= 0.80 (= highest sensitivity)
+cut_at_spec <- function(score, truth, min_spec = 0.80) {
+  neg <- sort(score[truth == "no"])
+  neg[ceiling(min_spec * length(neg))]                
+}
+
+oof_scores <- function(wf, folds) {
+  map(folds$splits, \(s) {
+    f <- fit(wf, analysis(s)); a <- assessment(s)
+    tibble(.row = as.integer(s, data = "assessment"), exc = a$exc, score = svm_score(f, a))
+  }) |> list_rbind() |> arrange(.row)
+}
+
+rbf_wf <- finalize_workflow(workflow(rec, rbf_spec),
+                            select_best(rbf_res, metric = "bal_accuracy"))
+oof <- oof_scores(rbf_wf, folds)
+cut_oof <- cut_at_spec(oof$score, oof$exc)
+
+rbf_fit     <- fit(rbf_wf, train)
+train_score <- svm_score(rbf_fit, train)
+test_score  <- svm_score(rbf_fit, test)
+
+# training cut off vs out of fold cutoff
+cut_train <- cut_at_spec(train_score, train$exc)
+
+# training and out of fold CVs
+c(
+  train_auc = roc_auc_vec(train$exc, train_score),
+  oof_auc   = roc_auc_vec(oof$exc, oof$score)
+)
+
+# apply to test scre
+eval_cut <- function(name, cut) {
+  pred <- factor(ifelse(test_score > cut, "yes", "no"), levels = levels(test$exc))
+  tibble(
+    rule          = name,
+    cutoff        = cut,
+    test_sens     = sens_vec(test$exc, pred),
+    test_spec     = spec_vec(test$exc, pred),
+    share_flagged = mean(pred == "yes")
+  )
+}
+
+bind_rows(
+  eval_cut("Default (score > 0)", 0),
+  eval_cut("(a) Train cutoff",    cut_train),
+  eval_cut("(b) OOF cutoff",      cut_oof)
+)
+```
+
+
+> **Q4.** What does an SVM output, and what does Platt scaling do to it? Why can it not change the AUC? Using your answer to Task 9, explain the SVM row of Table S7 (sensitivity 0.00, specificity 1.00). The paper used balanced class weights and still got that result; read how `beach_model.py` makes its predictions (`predict_proba(...)[:, 1]`, then `> 0.5`) and explain why. What went wrong in Task 10, and what check would have caught it? Compare your tuned-cutoff results with the paper's tuned SVMs (sensitivity 0.32, specificity 0.78). Which cutoff would you give a beach manager, and why should the cutoff be chosen on out-of-fold rather than training scores?
+
+Platt scaling adds a curve over the decision value. It cannot chance the AUC because the AUC depends on the rank ordering of the predictions, which stay the same with the Platt scaling. The SVM row of table S7 has a specificity of 1 and a sensitivity of 0 because when the probability threshold is greater than 0.5, zero days cross this because the dataset is imbalanced. The paper still got this result even after using balanced class weights because the Platt scaling undoes the class weights. In task 10, the correlation is almost -1, and checking this correlation right after fitting the models would have caught this. The tuned cutoff results give a sensitivity of between 0.45 and 0.65, which is higher than the paper, and a specificity between 0.67 and 0.82, which is on par with the paper. I would give a beach manager a cutoff of 0.26 because this cutoff has a high specificity, meaning there will be few unnecessary beach closures. The cutoff should be chosen from the out of fold because using the training cutoff may overfit the data. 
+
+## Part E — Interpretation
+
+> **Q5.** (a) Your test AUC is well above the paper's medians. Give at least two reasons that do not involve your SVM being better. Think about how the 10 predictors were chosen (Table S6 summarises models from all eight partitions), about Table S5, and about the uncertainty from Task 8. (b) What does a train-2007–2012, test-2013–2014 split test that 10-fold CV within 2007–2012 does not? (c) At the paper's cutoff, about what share of flagged days really exceed? Would this be useful as an early warning, compared with posting from last week's sample? (d) What share of samples followed rain, and what does that imply for using a model like this to study extreme precipitation and waterborne illness? What data would you need instead?
+
+One reason why the test AUC might be above the paper's medians is because the use of bootstrapped samples may lead to slightly different results each time. A second reason is because the predictors are collinear. The train-2007-2012, test-2013-2014 split tests the implementation of the water quality infrastructure that is not captured within the 10-fold CV within 2007-2012. At the paper's cutoff, about 0.39 of the flagged days exceed. This may be useful as an early warning, though the moderate sensitivities indicate that public health risks may be missed. 28/290 samples followed rain. This implies that other variables will be needed to study extreme precipitation and waterborne illness, such as treatment infrastructure, pollution sources, permeability of surface, and soil mositure, among other factors. 
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(kernlab)
+tidymodels_prefer()
+
+cb <- read_csv("cowell_ec_lead1.csv") |>
+  mutate(exc = factor(if_else(EC_exc == 1, "yes", "no"), levels = c("yes", "no")))
+predictors <- c("lograin6", "logflow4", "WVHT4", "APD2", "APD3", "APD4", "APD5",
+                "tide_max4", "rad4", "atemp_min5")
+train <- cb |> filter(split == "train") |> select(exc, all_of(predictors))
+test  <- cb |> filter(split == "test")  |> select(exc, all_of(predictors))
+
+# the paper's class_weight = 'balanced': n / (2 * n_class)
+w_bal <- c(yes = nrow(train) / (2 * sum(train$exc == "yes")),
+           no  = nrow(train) / (2 * sum(train$exc == "no")))
+
+rec <- recipe(exc ~ ., data = train) |> step_normalize(all_predictors())
+
+# ---- helpers -----------------------------------------------------------------
+# SVM decision value f(x), oriented so that larger = more likely "yes".
+# (kernlab's decision value is positive for the 2nd factor level, "no", so we flip it.)
+svm_score <- function(wf_fit, new_data) {
+  x <- extract_recipe(wf_fit) |> bake(new_data = new_data, all_predictors())
+  -as.numeric(predict(extract_fit_engine(wf_fit), x, type = "decision"))
+}
+# linear kernel only: coefficient vector beta (standardized scale), positive = toward "yes"
+svm_w <- function(wf_fit) {
+  m <- extract_fit_engine(wf_fit)
+  -colSums(coef(m)[[1]] * xmatrix(m)[[1]])
+}
+# prob.model = FALSE: no Platt probabilities (see Part D), so predict() returns classes only
+lin_fit <- function(C, weights = NULL, data = train) {
+  spec <- svm_linear(cost = C) |>
+    set_engine("kernlab", class.weights = weights, prob.model = FALSE) |>
+    set_mode("classification")
+  workflow(rec, spec) |> fit(data)
+}
+
+# ---- Part B ------------------------------------------------------------------
+f <- lin_fit(1)                                       # unweighted
+nSV(extract_fit_engine(f)); sqrt(sum(svm_w(f)^2))
+table(predict(f, train)$.pred_class)
+
+set.seed(1234)
+folds <- vfold_cv(train, v = 10, strata = exc)        # reuse these folds in Parts C and D
+cv_metrics <- metric_set(bal_accuracy, sensitivity, specificity)
+lin_spec <- svm_linear(cost = tune()) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = FALSE) |>
+  set_mode("classification")
+lin_res <- tune_grid(workflow(rec, lin_spec), resamples = folds,
+                     grid = tibble(cost = 10^(-3:2)), metrics = cv_metrics)
+collect_metrics(lin_res)
+
+# ---- Part C ------------------------------------------------------------------
+rbf_spec <- svm_rbf(cost = tune(), rbf_sigma = tune()) |>
+  set_engine("kernlab", class.weights = w_bal, prob.model = FALSE) |>
+  set_mode("classification")
+rbf_res <- tune_grid(workflow(rec, rbf_spec), resamples = folds,
+                     grid = crossing(cost = 10^(-2:2), rbf_sigma = 10^(-3:0)),
+                     metrics = cv_metrics)                            # ~15 s; poly ~1 min
+rbf_fit <- finalize_workflow(workflow(rec, rbf_spec), select_best(rbf_res, metric = "bal_accuracy")) |>
+  fit(train)
+roc_auc_vec(test$exc, svm_score(rbf_fit, test))       # AUC from the decision value
+
+# ---- Part D ------------------------------------------------------------------
+# Platt probabilities: same model, prob.model = TRUE (drop class.weights for Task 9)
+rbf_prob_spec <- finalize_model(rbf_spec, select_best(rbf_res, metric = "bal_accuracy")) |>
+  set_engine("kernlab", prob.model = TRUE)
+set.seed(1234)
+rbf_prob <- workflow(rec, rbf_prob_spec) |> fit(train)
+predict(rbf_prob, test, type = "prob")
+
+# the paper's rule: lowest cutoff with specificity >= 0.80 (= highest sensitivity)
+cut_at_spec <- function(score, truth, min_spec = 0.80) {
+  neg <- sort(score[truth == "no"])
+  neg[ceiling(min_spec * length(neg))]                # predict "yes" when score > cutoff
+}
+# out-of-fold decision values: each training sample scored by a model fitted without it
+oof_scores <- function(wf, folds) {
+  map(folds$splits, \(s) {
+    f <- fit(wf, analysis(s)); a <- assessment(s)
+    tibble(.row = as.integer(s, data = "assessment"), exc = a$exc, score = svm_score(f, a))
+  }) |> list_rbind() |> arrange(.row)
+}
+oof <- oof_scores(finalize_workflow(workflow(rec, rbf_spec),
+                                    select_best(rbf_res, metric = "bal_accuracy")), folds)
+cut_at_spec(oof$score, oof$exc)
+```
+
+**Warnings you can ignore.** kernlab prints `maximum number of iterations reached` and `line search fails` while it fits Platt probabilities (Part D). These come from its internal logistic fit and do not stop anything.
+
+# Check your numbers
+
+- **Part A:** 290 training samples with 85 exceedances, and 94 test samples with 20. "Always no" scores 0.787 on the test set. About 11% of samples had rain 6 days before.
+- **Part B:** the unweighted fits have ‖β‖ < 0.001 and predict no "yes" at all. With class weights at C = 1: 221 support vectors, training sensitivity ≈ 0.73, specificity ≈ 0.60. CV balanced accuracy is ≈ 0.63–0.64 for every C ≥ 0.1.
+- **Part C:** CV balanced accuracy for the best setting of each kernel is ≈ 0.63–0.64. Test AUC is ≈ 0.73–0.75 for all three kernels.
+- **Part D:** without class weights, almost no test probability exceeds 0.5. The paper's cutoff rule gives test specificity ≈ 0.78–0.84.
+- **Runtime:** about 2 minutes for everything. The polynomial grid is the slowest part (≈ 1 min). Results can differ slightly from the key with other package versions.
