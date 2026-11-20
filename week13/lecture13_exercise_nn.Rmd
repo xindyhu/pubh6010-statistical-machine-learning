@@ -1,0 +1,233 @@
+---
+title: "Lecture 13 Exercise — Neural Networks"
+subtitle: "PubH 6010 Independent Study · Guo, Liu & Chen (2021): temperature lags and daily mortality in Taipei"
+author: "Your name:"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+Lecture 13 covers **feedforward neural networks**: nodes, layers and activation functions, the weights and biases, the cost function and gradient descent, local minima, weight decay, tuning by cross-validation, and attribution. This week's paper fits feedforward networks to a classic environmental-epidemiology time series, daily deaths and 30 days of lagged temperature. It asks how cross-validation should be done when the data are a time series.
+
+> Guo C-Y, Liu T-W, Chen Y-H. A novel cross-validation strategy for artificial neural networks using distributed-lag environmental factors. *PLOS ONE* 2021;16(1):e0244094. doi:[10.1371/journal.pone.0244094](https://doi.org/10.1371/journal.pone.0244094) (open access).
+
+The data are the paper's S1 File (`pone.0244094.s001.csv`, in this folder).
+
+**Why this paper.** It connects three threads of this term: the temperature–mortality time series from Week 9 (Bhaskaran et al.), the distributed-lag structure used in the extreme-weather literature you reviewed, and the question of how to evaluate a prediction model honestly when observations are autocorrelated. It is also a good paper to *critique*. Several things you would need to replicate it are missing, and it never compares its networks with a standard model. Part E asks you to judge that.
+
+**Reading before you start.** The Abstract, the Methods (data, the ANN set-up and the three CV schemes, with Fig 2) and Results Tables 3–9. Skim the Discussion.
+
+**What we take from the paper, and what we change.**
+
+| paper | this exercise |
+|---|---|
+| daily all-cause deaths, Taipei, 2012–2016 | the same file |
+| inputs: temperature lags 0–30, O3, PM2.5, year/month/weekday/holiday indicators, possibly lagged deaths | temperature lags 0–30, O3, PM2.5, weekday, month and a **numeric time trend**. The file has no holiday variable, and we use no lagged deaths |
+| training = earliest 70%, test = last 30% | the same |
+| 2–3 hidden layers, 6–60 nodes each, software and activation not reported | **one** hidden layer, 2–10 nodes, logistic activation, `nnet` (the slides' package) with weight decay |
+| CV schemes: 5-fold, "leave one block out" (LOBO), "temporal block" (TB) | random 5-fold, **blocked** 5-fold (≈ LOBO), **forward-chaining** (≈ TB) |
+| no benchmark model | a **Poisson GLM with a DLNM** cross-basis for temperature (Week 9's model plus distributed lags) and linear regression |
+
+**Code: slides vs here.** As before we use tidymodels where the slides use `caret`. The engine is the slides' `nnet::nnet()`.
+
+| slides | here |
+|---|---|
+| `nnet(Y ~ ., size = 5, decay = 0, linout = TRUE)` | `mlp(hidden_units = 5, penalty = 0, epochs = 1000) |> set_engine("nnet")` (parsnip sets `linout = TRUE` for regression; `epochs` is nnet's `maxit`) |
+| `train(method = "nnet", tuneGrid = expand.grid(size, decay), trControl = trainControl("cv", 10))` | `tune_grid(..., resamples = vfold_cv(...))` and two time-series alternatives |
+| `plotnet(nn_reg)` | `NeuralNetTools::plotnet(extract_fit_engine(fit))` |
+| `predict(nn, newdata)` | `predict(fit, new_data)`. We model a standardized outcome, so convert back with `deaths_nn()` |
+
+**Install once:** `install.packages(c("tidymodels", "nnet", "NeuralNetTools", "dlnm"))`.
+
+# Data
+
+`pone.0244094.s001.csv` has 1,818 rows (days), 2012-01-01 to 2016-12-31.
+
+| column | meaning |
+|---|---|
+| `date`, `year` | date |
+| `death` | all-cause deaths that day, Taipei City |
+| `tmp` | daily mean temperature (°C) |
+| `CO`, `O3`, `PM 10`, `PM 2.5`, `SO2` | daily mean pollutant concentrations (units not stated in the paper) |
+| `weekday`, `weekday_1`–`weekday_7` | day of week (1 = Sunday) and its indicators |
+
+The starter code builds the analysis data set:
+
+- `tmp_l00` … `tmp_l30`: temperature on the same day and the 30 days before. Some calendar days are absent from the file; temperature is interpolated on those days **only** to build later days' lags.
+- `time` (years since 2012-01-01), `dow`, `month`.
+- `y`: deaths standardized with the training mean and SD. Part B explains why.
+
+Submit your knitted `.Rmd` with short written answers to the questions in **bold**. The full set of tasks runs in about 3 minutes; Task 7 (tuning) takes most of it.
+
+# Tasks
+
+## Part A — The data and the benchmarks
+
+1. Reproduce **Table 1** (N, mean, SD, min, max for deaths, temperature and the five pollutants). Which calendar days are missing from the file? How many days remain after building the lags, and what are the date ranges of the training and test sets? Tabulate mean deaths by year.
+2. Compute two baselines on the test set: (i) the MSE of predicting the **training mean** for every test day, and (ii) the **test-set variance** (the MSE of predicting the test mean, which you could not know in advance). Also compute both for the paper's own split (the last 30% of the 1,818 rows).
+3. Fit the benchmark **Poisson GLM with a DLNM cross-basis** (`glm_dlnm` in the starter code). Report its training and test MSE. Plot the cumulative temperature–mortality curve over lags 0–30 with `crosspred()`, centred at the temperature with the lowest risk.
+
+> **Q1.** Do the data match Table 1? What did you have to drop, and what is missing that the paper says it used? On the test set, what MSE does predicting the training mean give, and what is the test-set variance? Compare these with the paper's best test MSE (109.77, Table 5) and with the GLM + DLNM. What does that tell you about the paper's reported accuracy? Why must a model of this series handle a time trend, and which of our inputs is supposed to?
+
+## Part B — One network (slides: neural network regression example)
+
+4. Fit a network with 5 hidden nodes and **decay 0**, as on the slides, twice: once with the raw outcome `death` (`rec_raw`) and once with the standardized outcome `y` (`rec`). Repeat both with decay = 1. Report training and test MSE in deaths². How many inputs and weights does the network have (`length(extract_fit_engine(fit)$wts)`)? Draw it with `plotnet()`.
+5. Refit the standardized 5-node network with seeds 1–5, at decay 0 and decay 1. Report training MSE, test MSE and `extract_fit_engine(fit)$convergence` (1 = stopped at `maxit`) for each. Compute the correlations among the five fits' test-set predictions.
+
+> **Q2.** How many inputs and weights does the 5-node network have, and how does that compare with the number of training days? Why did the raw-deaths network with decay 0 do so badly on the test set, and why does decay = 1 mean something different for raw and standardized outcomes? (Hint: `nnet` minimizes the *sum* of squared errors + decay × Σw².) What happened across the five random starts, and which slide explains it? What does the correlation between seeds' test predictions tell you?
+
+## Part C — Tuning, and three ways to cross-validate a time series
+
+6. Build three resampling schemes on the **training set only** (starter code):
+   - **random**: `vfold_cv(v = 5)`, the paper's benchmark "5-fold CV";
+   - **blocked**: 5 contiguous blocks of about 248 days; each block is held out once (≈ the paper's LOBO-CV);
+   - **forward-chaining**: train on blocks 1…k−1, assess on block k, for k = 2…5 (≈ the paper's TB-CV).
+
+   Print the date range of every assessment set.
+7. Tune `hidden_units` ∈ {2, 5, 10} × `penalty` (decay) ∈ {0.01, 0.1, 1, 3, 10, 30} under each scheme. Compute CV MSE in deaths² as the **mean of the per-fold MSEs** (`collect_metrics(summarize = FALSE)`), and draw one heatmap per scheme.
+8. For each scheme, refit its best setting on all training data. Make a table: chosen size and decay, CV MSE, test MSE, and the **optimism** (test MSE − CV MSE).
+
+> **Q3.** Which (hidden units, decay) did each scheme choose? What does the heatmap say about the two tuning parameters, and which one matters more? Rank the schemes by CV MSE and compare each with its test MSE. Which scheme is most optimistic, and why? The paper argues LOBO-CV is best because it gave the lowest test MSE. Does your table support choosing a CV scheme that way? What should a CV scheme be judged on?
+
+## Part D — How good is the network, and what did it learn?
+
+9. One test-set table with: the training mean, linear regression on the same inputs, the GLM + DLNM, and the three tuned networks. Columns: MSE, RMSE, MAE, mean error (predicted − observed) and skill vs the training mean (1 − MSE/MSE_mean). Add the paper's 109.77 as a row. Split the mean error into Jun–Dec 2015, Jan–Mar 2016 and Apr–Dec 2016. Plot observed and predicted deaths over the test period for the GLM and the forward-CV network. Report the correlation between the network's and linear regression's test predictions.
+10. **Permutation importance** (slides: attribution). On the test set, shuffle one *block* of inputs at a time: all 31 temperature lags together, O3 + PM2.5, weekday, month, time. Report the mean increase in MSE over 20 shuffles, for the forward-CV network and for the GLM (`perm_importance()`).
+11. **What curve did the network learn?** Set every lag 0–30 to the same temperature T, for every training day, predict, and average (`sustained()`). Do this for T = 8, …, 33 °C for the forward-CV network, a 10-unit network with decay = 1, and the GLM. Plot the three curves together.
+
+> **Q4.** (a) Rank the models by test MSE. Does any network beat the GLM + DLNM? Does any beat linear regression? (b) Explain why the chosen network's predictions are so close to linear regression's. (c) Which models under-predict, and in which part of the test period? Why can a sigmoid network not extrapolate a trend, however `time` is coded? What does that imply for the paper's year indicators? (d) Which input blocks matter most in each model? (e) Compare the Task 11 curves with the DLNM. Is the network's curve one you would report as an exposure–response function? (f) Would you cite this paper as evidence that ANNs predict temperature-related mortality better than standard methods?
+
+## Part E — Interpretation
+
+> **Q5.** (a) List what the paper does not report that you needed in order to replicate it. (b) What the paper did right: tuning by CV within the training period and keeping the last 30% as a test set. What would you add? (c) Your dissertation outcome will be waterborne illness counts after extreme precipitation: rarer, noisier and with fewer events than all-cause deaths in a city of about 2.7 million. What does this exercise imply for choosing between a DLNM/case-crossover model and a neural network? (d) Under what circumstances could a neural network still be worth it in your project?
+
+# Numbers to check against
+
+If your set-up is right you should get: **1,769** modeled days, **1,238** training (2012-01-31 to 2015-06-21) and **531** test (2015-06-22 to 2016-12-31). Training mean **60.16** deaths/day. The GLM + DLNM test MSE is **73.2**. The 5-node network has **51** inputs and **266** weights. Results for the networks depend on the seed and the package versions, so expect your network numbers to differ a little.
+
+# Starter code
+
+```{r starter, eval=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(dlnm)
+tidymodels_prefer()
+
+# ---- data -------------------------------------------------------------------
+raw <- read_csv("pone.0244094.s001.csv") |>
+  rename(PM25 = `PM 2.5`, PM10 = `PM 10`)
+
+cal <- tibble(date = seq(ymd("2012-01-01"), ymd("2016-12-31"), by = "day")) |>
+  left_join(raw, by = "date") |>
+  mutate(tmp_f = approx(seq_along(tmp), tmp, xout = seq_along(tmp))$y)  # fills missing days, for lags only
+
+tl   <- sprintf("tmp_l%02d", 0:30)                 # tmp_l00 = same day ... tmp_l30 = 30 days before
+lags <- map(0:30, \(k) dplyr::lag(cal$tmp_f, k)) |> set_names(tl) |> as_tibble()
+
+dat <- bind_cols(cal, lags) |>
+  mutate(time  = as.numeric(date - ymd("2012-01-01")) / 365.25,
+         dow   = factor(wday(date, label = TRUE), ordered = FALSE),
+         month = factor(month(date, label = TRUE), ordered = FALSE)) |>
+  filter(!is.na(death)) |>                          # drop the missing days themselves
+  drop_na(all_of(tl), O3, PM25)                     # and days without full lags or pollutants
+
+n_train <- floor(0.7 * nrow(dat))                   # the paper: earliest 70% = training
+train <- dat |> slice(1:n_train)
+test  <- dat |> slice(-(1:n_train))
+mu <- mean(train$death); s <- sd(train$death)
+train <- train |> mutate(y = (death - mu) / s)     # standardized outcome
+test  <- test  |> mutate(y = (death - mu) / s)
+
+mse <- function(obs, pred) mean((obs - pred)^2)
+
+# ---- the network --------------------------------------------------------------
+inputs <- c(tl, "O3", "PM25", "dow", "month", "time")
+rec <- recipe(y ~ ., data = select(train, y, all_of(inputs))) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors()) |>                      # a forward-CV fold can lack Nov/Dec
+  step_normalize(all_predictors())
+rec_raw <- recipe(death ~ ., data = select(train, death, all_of(inputs))) |>   # Task 4 only
+  step_dummy(all_nominal_predictors()) |> step_zv(all_predictors()) |> step_normalize(all_predictors())
+
+nn_spec <- function(h, decay) {
+  mlp(hidden_units = h, penalty = decay, epochs = 1000) |>
+    set_engine("nnet", MaxNWts = 5000, trace = FALSE) |>
+    set_mode("regression")
+}
+fit_nn <- function(h, decay, seed = 1234, data = train) {
+  set.seed(seed)
+  workflow(rec, nn_spec(h, decay)) |> fit(data)
+}
+deaths_nn <- function(fit, new_data) mu + s * predict(fit, new_data)$.pred    # back to deaths/day
+
+f <- fit_nn(5, 0)
+mse(test$death, deaths_nn(f, test))
+NeuralNetTools::plotnet(extract_fit_engine(f))
+
+set.seed(1234); f_raw <- workflow(rec_raw, nn_spec(5, 0)) |> fit(train)
+mse(test$death, predict(f_raw, test)$.pred)        # raw outcome: already in deaths
+
+# ---- the benchmark: Poisson GLM with a DLNM cross-basis --------------------------
+cb_train <- crossbasis(as.matrix(train[tl]), lag = 30,
+                       argvar = list(fun = "ns", df = 4),                     # exposure-response
+                       arglag = list(fun = "ns", knots = logknots(30, 3)))    # lag-response
+glm_dlnm <- glm(death ~ cb_train + O3 + PM25 + dow + month + time, family = poisson, data = train)
+deaths_glm <- function(new_data) {                  # predict() cannot rebuild the cross-basis
+  cb <- crossbasis(as.matrix(new_data[tl]), lag = 30,
+                   argvar = attr(cb_train, "argvar"), arglag = attr(cb_train, "arglag"))
+  X <- model.matrix(~ O3 + PM25 + dow + month + time, data = new_data)
+  b <- coef(glm_dlnm)
+  as.numeric(exp(X %*% b[colnames(X)] + cb %*% b[grep("^cb_train", names(b))]))
+}
+mse(test$death, deaths_glm(test))
+cp <- crosspred(cb_train, glm_dlnm, at = 8:33, cen = 25)   # change cen to the minimum-risk temperature
+plot(cp, "overall")
+
+# ---- Part C: three resampling schemes --------------------------------------------
+train <- train |> mutate(block = ntile(row_number(), 5))   # 5 contiguous blocks
+ix <- seq_len(nrow(train))
+set.seed(1234)
+folds <- list(
+  random  = vfold_cv(train, v = 5),
+  blocked = group_vfold_cv(train, group = block),
+  forward = manual_rset(
+    map(2:5, \(k) make_splits(list(analysis = ix[train$block < k], assessment = ix[train$block == k]),
+                              data = train)),
+    ids = paste0("Forward", 1:4)))
+
+grid <- crossing(hidden_units = c(2, 5, 10), penalty = c(0.01, 0.1, 1, 3, 10, 30))
+wf_tune <- workflow(rec, mlp(hidden_units = tune(), penalty = tune(), epochs = 1000) |>
+                      set_engine("nnet", MaxNWts = 5000, trace = FALSE) |> set_mode("regression"))
+res <- map(folds, \(f) { set.seed(1234); tune_grid(wf_tune, resamples = f, grid = grid, metrics = metric_set(rmse)) })
+# per-fold RMSE is on the standardized scale: MSE in deaths^2 = (rmse * s)^2
+collect_metrics(res$forward, summarize = FALSE)
+
+# ---- Part D helpers ----------------------------------------------------------------
+perm_importance <- function(predict_fn, data, groups, B = 20) {
+  base <- mse(data$death, predict_fn(data))
+  map_dfr(names(groups), \(g) {
+    inc <- map_dbl(1:B, \(b) {
+      d <- data
+      d[groups[[g]]] <- d[sample(nrow(d)), groups[[g]]]   # shuffle the whole block jointly
+      mse(d$death, predict_fn(d)) - base
+    })
+    tibble(group = g, mse_increase = mean(inc), sd = sd(inc))
+  })
+}
+groups <- list(`temperature lags 0-30` = tl, `O3 + PM2.5` = c("O3", "PM25"),
+               weekday = "dow", month = "month", `time trend` = "time")
+# e.g. perm_importance(\(d) deaths_nn(my_fit, d), test, groups);  perm_importance(deaths_glm, test, groups)
+
+sustained <- function(predict_fn, temps = 8:33, data = train) {
+  map_dfr(temps, \(t) { d <- data; d[tl] <- t; tibble(temp = t, deaths = mean(predict_fn(d))) })
+}
+```
